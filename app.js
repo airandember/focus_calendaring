@@ -17,6 +17,7 @@ const dayDuration = document.querySelector("#day-duration");
 const focusToggle = document.querySelector("#focus-toggle");
 const focusProject = document.querySelector("#focus-project");
 const focusStatus = document.querySelector("#focus-status");
+const selectedDayLabel = document.querySelector("#selected-day-label");
 
 const taskForm = document.querySelector("#task-form");
 const taskMessage = document.querySelector("#task-message");
@@ -24,9 +25,17 @@ const bulkInput = document.querySelector("#bulk-input");
 const bulkMessage = document.querySelector("#bulk-message");
 
 const dayMap = document.querySelector("#day-map");
-const calendarOverview = document.querySelector("#calendar-overview");
+const monthGrid = document.querySelector("#month-grid");
+const monthPrev = document.querySelector("#month-prev");
+const monthNext = document.querySelector("#month-next");
+const monthLabel = document.querySelector("#month-label");
 const milestonesEl = document.querySelector("#milestones");
 const balanceEl = document.querySelector("#balance");
+const todayMap = document.querySelector("#today-map");
+const todaySummary = document.querySelector("#today-summary");
+
+const tabButtons = document.querySelectorAll("[data-tab-target]");
+const tabContents = document.querySelectorAll("[data-tab-content]");
 
 const signInButton = document.querySelector("#sign-in");
 const signUpButton = document.querySelector("#sign-up");
@@ -34,6 +43,7 @@ const signUpButton = document.querySelector("#sign-up");
 const todayISO = new Date().toISOString().slice(0, 10);
 dayPicker.value = todayISO;
 document.querySelector("#task-date").value = todayISO;
+selectedDayLabel.textContent = `Day view: ${todayISO}`;
 
 function setMessage(target, text, tone = "default") {
   if (!target) return;
@@ -66,10 +76,12 @@ function minutesToDuration(minutes) {
 const WORK_START = 9 * 60;
 const WORK_END = 17 * 60;
 const AUTO_CONT_MARKER = "[auto-cont]";
-const OVERVIEW_DAYS = 10;
+const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 let focusEnabled = false;
 let focusKey = "";
+let currentMonth = new Date(`${todayISO}T00:00:00`);
+currentMonth.setDate(1);
 
 function formatHours(hoursValue) {
   if (!hoursValue) return "";
@@ -89,6 +101,12 @@ function addDays(dateString, days) {
   return date.toISOString().slice(0, 10);
 }
 
+function formatDateParts(year, monthIndex, day) {
+  const mm = String(monthIndex + 1).padStart(2, "0");
+  const dd = String(day).padStart(2, "0");
+  return `${year}-${mm}-${dd}`;
+}
+
 function isWeekend(dateString) {
   const day = new Date(`${dateString}T00:00:00`).getDay();
   return day === 0 || day === 6;
@@ -100,18 +118,6 @@ function getNextWeekday(dateString) {
     cursor = addDays(cursor, 1);
   }
   return cursor;
-}
-
-function getUpcomingWeekdays(startDate, count) {
-  const days = [];
-  let cursor = getNextWeekday(startDate);
-  while (days.length < count) {
-    if (!isWeekend(cursor)) {
-      days.push(cursor);
-    }
-    cursor = addDays(cursor, 1);
-  }
-  return days;
 }
 
 function getProjectKey(task) {
@@ -126,6 +132,28 @@ function updateFocusStatus() {
     return;
   }
   focusStatus.textContent = `High Focus: ${focusKey}`;
+}
+
+function setActiveTab(tabId) {
+  tabButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.tabTarget === tabId);
+  });
+  tabContents.forEach((section) => {
+    const isActive = section.id === tabId;
+    section.classList.toggle("active", isActive);
+    section.hidden = !isActive;
+  });
+}
+
+function updateMonthLabel() {
+  const formatter = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" });
+  monthLabel.textContent = formatter.format(currentMonth);
+}
+
+function setCurrentMonthFromDate(dateString) {
+  const date = new Date(`${dateString}T00:00:00`);
+  currentMonth = new Date(date.getFullYear(), date.getMonth(), 1);
+  updateMonthLabel();
 }
 
 function getCurrentUser() {
@@ -154,6 +182,9 @@ async function renderApp(user) {
   appSection.hidden = false;
   userEmail.textContent = user.email ?? "Signed in";
   signOutButton.hidden = false;
+  setActiveTab("calendar-tab");
+  updateMonthLabel();
+  await loadMonth();
   await loadDay();
 }
 
@@ -195,6 +226,24 @@ signOutButton.addEventListener("click", async () => {
   renderSignedOut();
 });
 
+tabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setActiveTab(button.dataset.tabTarget);
+  });
+});
+
+monthPrev.addEventListener("click", () => {
+  currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1);
+  updateMonthLabel();
+  loadMonth();
+});
+
+monthNext.addEventListener("click", () => {
+  currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1);
+  updateMonthLabel();
+  loadMonth();
+});
+
 taskForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   setMessage(taskMessage, "");
@@ -232,6 +281,8 @@ taskForm.addEventListener("submit", async (event) => {
   document.querySelector("#task-date").value = dayPicker.value;
   setMessage(taskMessage, "Task added.");
   await loadDay();
+  await loadMonth();
+  await loadToday();
 });
 
 document.querySelector("#bulk-import").addEventListener("click", async () => {
@@ -269,13 +320,18 @@ document.querySelector("#bulk-import").addEventListener("click", async () => {
   bulkInput.value = "";
   setMessage(bulkMessage, `Imported ${tasks.length} task(s).`);
   await loadDay();
+  await loadMonth();
+  await loadToday();
 });
 
 refreshButton.addEventListener("click", loadDay);
 autoScheduleButton.addEventListener("click", autoSchedule);
 dayPicker.addEventListener("change", () => {
   document.querySelector("#task-date").value = dayPicker.value;
+  setCurrentMonthFromDate(dayPicker.value);
+  loadMonth();
   loadDay();
+  setActiveTab("calendar-tab");
 });
 
 focusToggle.addEventListener("change", () => {
@@ -367,14 +423,22 @@ async function loadDay() {
     return;
   }
   renderDay(data ?? []);
-  await loadOverview();
+  await loadToday();
 }
 
-async function loadOverview() {
+async function loadMonth() {
   const user = await getCurrentUser();
   if (!user) return;
-  const startDay = getNextWeekday(dayPicker.value || todayISO);
-  const endDay = addDays(startDay, 14);
+  const startDay = formatDateParts(
+    currentMonth.getFullYear(),
+    currentMonth.getMonth(),
+    1
+  );
+  const endDay = formatDateParts(
+    currentMonth.getFullYear(),
+    currentMonth.getMonth(),
+    new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0).getDate()
+  );
   const { data, error } = await supabase
     .from("tasks")
     .select("*")
@@ -384,13 +448,13 @@ async function loadOverview() {
     .order("task_date", { ascending: true });
 
   if (error) {
-    calendarOverview.innerHTML = `<p class="empty danger">${error.message}</p>`;
+    monthGrid.innerHTML = `<p class="empty danger">${error.message}</p>`;
     return;
   }
 
   const tasks = data ?? [];
   syncFocusOptions(tasks);
-  renderOverview(tasks, startDay);
+  renderMonthCalendar(tasks);
 }
 
 function syncFocusOptions(tasks) {
@@ -416,56 +480,83 @@ function syncFocusOptions(tasks) {
   updateFocusStatus();
 }
 
-function renderOverview(tasks, startDay) {
-  const days = getUpcomingWeekdays(startDay, OVERVIEW_DAYS);
-  const tasksByDate = days.reduce((map, day) => {
-    map[day] = [];
-    return map;
-  }, {});
+function renderMonthCalendar(tasks) {
+  const year = currentMonth.getFullYear();
+  const monthIndex = currentMonth.getMonth();
+  const firstDay = new Date(year, monthIndex, 1);
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const offset = (firstDay.getDay() + 6) % 7;
+
+  const tasksByDate = {};
   tasks.forEach((task) => {
-    if (tasksByDate[task.task_date]) {
-      tasksByDate[task.task_date].push(task);
+    if (!tasksByDate[task.task_date]) {
+      tasksByDate[task.task_date] = [];
     }
+    tasksByDate[task.task_date].push(task);
   });
 
-  const list = document.createElement("div");
-  list.className = "calendar-list";
+  monthGrid.innerHTML = "";
+  WEEKDAY_LABELS.forEach((label) => {
+    const weekday = document.createElement("div");
+    weekday.className = "calendar-weekday";
+    weekday.textContent = label;
+    monthGrid.appendChild(weekday);
+  });
 
-  days.forEach((day) => {
-    const items = tasksByDate[day] || [];
+  for (let i = 0; i < offset; i += 1) {
+    const spacer = document.createElement("div");
+    spacer.className = "calendar-cell inactive";
+    monthGrid.appendChild(spacer);
+  }
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const dayIso = formatDateParts(year, monthIndex, day);
+    const items = tasksByDate[dayIso] ?? [];
     const scheduledMinutes = items.reduce((sum, task) => {
       if (!task.start_time || !task.end_time) return sum;
       return sum + Math.max(toMinutes(task.end_time) - toMinutes(task.start_time), 0);
     }, 0);
-    const utilization = Math.min(scheduledMinutes / (WORK_END - WORK_START), 1);
-    const focusedCount = focusKey
-      ? items.filter((task) => getProjectKey(task) === focusKey).length
-      : 0;
-
-    const dayCard = document.createElement("div");
-    dayCard.className = "calendar-day";
-    if ((dayPicker.value || todayISO) === day) {
-      dayCard.classList.add("active");
+    const cell = document.createElement("div");
+    cell.className = "calendar-cell";
+    if (dayIso === todayISO) {
+      cell.classList.add("today");
     }
-    dayCard.innerHTML = `
-      <strong>${day}</strong>
-      <div class="calendar-meta">
-        <span>${items.length} tasks</span>
-        <span>${minutesToDuration(scheduledMinutes)}</span>
-        ${focusedCount ? `<span>${focusedCount} focused</span>` : ""}
-      </div>
-      <div class="calendar-bar"><span style="width:${utilization * 100}%"></span></div>
+    if ((dayPicker.value || todayISO) === dayIso) {
+      cell.classList.add("selected");
+    }
+    cell.innerHTML = `
+      <span class="day-number">${day}</span>
+      <span class="day-stats">${items.length} tasks</span>
+      <span class="day-stats">${minutesToDuration(scheduledMinutes)}</span>
     `;
-    dayCard.addEventListener("click", () => {
-      dayPicker.value = day;
-      document.querySelector("#task-date").value = day;
+    if (items.length) {
+      cell.classList.add("has-tasks");
+    }
+    cell.addEventListener("click", () => {
+      dayPicker.value = dayIso;
+      document.querySelector("#task-date").value = dayIso;
+      selectedDayLabel.textContent = `Day view: ${dayIso}`;
       loadDay();
+      setActiveTab("calendar-tab");
     });
-    list.appendChild(dayCard);
-  });
+    monthGrid.appendChild(cell);
+  }
+}
 
-  calendarOverview.innerHTML = "";
-  calendarOverview.appendChild(list);
+async function loadToday() {
+  const user = await getCurrentUser();
+  if (!user) return;
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("user_id", user.id)
+    .eq("task_date", todayISO)
+    .order("start_time", { ascending: true });
+  if (error) {
+    todayMap.innerHTML = `<p class="empty danger">${error.message}</p>`;
+    return;
+  }
+  renderToday(data ?? []);
 }
 
 function renderDay(tasks) {
@@ -479,6 +570,72 @@ function renderDay(tasks) {
   }, 0);
   dayTotal.textContent = `${tasks.length} tasks`;
   dayDuration.textContent = minutesToDuration(totalMinutes);
+  selectedDayLabel.textContent = `Day view: ${dayPicker.value || todayISO}`;
+}
+
+function renderToday(tasks) {
+  renderHourlyBreakdown(tasks);
+  const totalMinutes = tasks.reduce((sum, task) => {
+    if (!task.start_time || !task.end_time) return sum;
+    return sum + Math.max(toMinutes(task.end_time) - toMinutes(task.start_time), 0);
+  }, 0);
+  todaySummary.innerHTML = `
+    <div class="balance-list">
+      <div class="balance-item"><span>${tasks.length} tasks</span><span>${minutesToDuration(totalMinutes)}</span></div>
+      <div class="balance-item"><span>Milestones</span><span>${tasks.filter((task) => task.is_milestone).length}</span></div>
+    </div>
+  `;
+}
+
+function renderHourlyBreakdown(tasks) {
+  const startHour = 9;
+  const endHour = 17;
+  todayMap.innerHTML = "";
+  for (let hour = startHour; hour < endHour; hour += 1) {
+    const slotStart = hour * 60;
+    const slotEnd = (hour + 1) * 60;
+    const matches = tasks.filter((task) => {
+      if (!task.start_time || !task.end_time) return false;
+      const start = toMinutes(task.start_time);
+      const end = toMinutes(task.end_time);
+      return start < slotEnd && end > slotStart;
+    });
+    const row = document.createElement("div");
+    row.className = "hour-row";
+    const label = document.createElement("div");
+    label.className = "hour-label";
+    label.textContent = `${String(hour).padStart(2, "0")}:00`;
+    const list = document.createElement("div");
+    list.className = "hour-tasks";
+    if (!matches.length) {
+      list.innerHTML = `<span class="empty">Open focus block</span>`;
+    } else {
+      matches.forEach((task) => {
+        const item = document.createElement("div");
+        item.className = "hour-task";
+        if (focusEnabled && focusKey && getProjectKey(task) === focusKey) {
+          item.classList.add("focused");
+        }
+        item.textContent = `${task.title} (${formatTimeRange(task.start_time, task.end_time)})`;
+        list.appendChild(item);
+      });
+    }
+    row.append(label, list);
+    todayMap.appendChild(row);
+  }
+
+  const unscheduled = tasks.filter((task) => !task.start_time || !task.end_time);
+  if (unscheduled.length) {
+    const row = document.createElement("div");
+    row.className = "hour-row";
+    row.innerHTML = `
+      <div class="hour-label">Unscheduled</div>
+      <div class="hour-tasks">
+        ${unscheduled.map((task) => `<div class="hour-task">${escapeHtml(task.title)}</div>`).join("")}
+      </div>
+    `;
+    todayMap.appendChild(row);
+  }
 }
 
 function renderTimeline(tasks) {
@@ -784,6 +941,8 @@ async function autoSchedule() {
   const focusTag = useFocus ? ` with focus on ${focusKey}` : "";
   setMessage(taskMessage, `Auto-scheduled ${scheduledCount} task(s)${focusTag}.`);
   await loadDay();
+  await loadMonth();
+  await loadToday();
 }
 
 function getFreeSlots(busyIntervals) {

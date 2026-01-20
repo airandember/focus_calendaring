@@ -39,6 +39,14 @@
       </section>
 
       <section id="app-section" class="panel" hidden>
+        <div class="tabs">
+          <button class="tab-button active" data-tab-target="calendar-tab" type="button">
+            Calendar
+          </button>
+          <button class="tab-button" data-tab-target="today-tab" type="button">Today</button>
+          <button class="tab-button" data-tab-target="add-tab" type="button">Add Tasks</button>
+        </div>
+
         <div class="toolbar">
           <div class="toolbar-group">
             <label>
@@ -65,84 +73,105 @@
           </div>
         </div>
 
-        <div class="layout">
-          <section class="card">
-            <h3>Day map</h3>
-            <div id="day-map" class="timeline"></div>
-          </section>
-
-          <section class="card">
-            <h3>Calendar overview</h3>
-            <div id="calendar-overview"></div>
-            <h3>Milestones</h3>
-            <div id="milestones"></div>
-            <h3>Workload balance</h3>
-            <div id="balance"></div>
-          </section>
-        </div>
-
-        <div class="layout">
-          <section class="card">
-            <h3>Add a single task</h3>
-            <form id="task-form">
-              <div class="form-grid">
-                <label>
-                  Task title
-                  <input id="task-title" type="text" required />
-                </label>
-                <label>
-                  Company
-                  <input id="task-company" type="text" placeholder="MBC" />
-                </label>
-                <label>
-                  Project
-                  <input id="task-project" type="text" placeholder="HighLevel integration" />
-                </label>
-                <label>
-                  Day
-                  <input id="task-date" type="date" required />
-                </label>
-                <label>
-                  Start
-                  <input id="task-start" type="time" />
-                </label>
-                <label>
-                  End
-                  <input id="task-end" type="time" />
-                </label>
-                <label>
-                  Est. hours
-                  <input id="task-hours" type="number" step="0.25" min="0" placeholder="2.5" />
-                </label>
+        <section id="calendar-tab" class="tab-content active" data-tab-content>
+          <div class="layout">
+            <section class="card">
+              <div class="month-header">
+                <button id="month-prev" class="secondary" type="button">Prev</button>
+                <h3 id="month-label">Month</h3>
+                <button id="month-next" class="secondary" type="button">Next</button>
               </div>
-              <label class="checkbox">
-                <input id="task-milestone" type="checkbox" />
-                Milestone
-              </label>
-              <label>
-                Notes
-                <textarea id="task-notes" rows="3" placeholder="Optional details"></textarea>
-              </label>
+              <div id="month-grid" class="calendar-grid"></div>
+            </section>
+
+            <section class="card">
+              <h3 id="selected-day-label">Day view</h3>
+              <div id="day-map" class="timeline"></div>
+              <h3>Milestones</h3>
+              <div id="milestones"></div>
+              <h3>Workload balance</h3>
+              <div id="balance"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="today-tab" class="tab-content" data-tab-content hidden>
+          <div class="layout">
+            <section class="card">
+              <h3>Today: hourly focus</h3>
+              <div id="today-map" class="hourly"></div>
+            </section>
+            <section class="card">
+              <h3>Today summary</h3>
+              <div id="today-summary"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="add-tab" class="tab-content" data-tab-content hidden>
+          <div class="layout">
+            <section class="card">
+              <h3>Add a single task</h3>
+              <form id="task-form">
+                <div class="form-grid">
+                  <label>
+                    Task title
+                    <input id="task-title" type="text" required />
+                  </label>
+                  <label>
+                    Company
+                    <input id="task-company" type="text" placeholder="MBC" />
+                  </label>
+                  <label>
+                    Project
+                    <input id="task-project" type="text" placeholder="HighLevel integration" />
+                  </label>
+                  <label>
+                    Day
+                    <input id="task-date" type="date" required />
+                  </label>
+                  <label>
+                    Start
+                    <input id="task-start" type="time" />
+                  </label>
+                  <label>
+                    End
+                    <input id="task-end" type="time" />
+                  </label>
+                  <label>
+                    Est. hours
+                    <input id="task-hours" type="number" step="0.25" min="0" placeholder="2.5" />
+                  </label>
+                </div>
+                <label class="checkbox">
+                  <input id="task-milestone" type="checkbox" />
+                  Milestone
+                </label>
+                <label>
+                  Notes
+                  <textarea id="task-notes" rows="3" placeholder="Optional details"></textarea>
+                </label>
+                <div class="actions">
+                  <button type="submit">Add task</button>
+                </div>
+                <p class="helper" id="task-message"></p>
+              </form>
+            </section>
+
+            <section class="card">
+              <h3>Bulk import tasks</h3>
+              <p class="helper">
+                Format: <code>YYYY-MM-DD | Company | Project | Title #milestone est=2.5</code>
+                <span class="helper">Separators: |  _  tab, or 2+ spaces. Line breaks: newline or ;;.</span>
+              </p>
+              <textarea id="bulk-input" rows="8" placeholder="Add one task per line"></textarea>
               <div class="actions">
-                <button type="submit">Add task</button>
+                <button id="bulk-import" type="button">Import tasks</button>
               </div>
-              <p class="helper" id="task-message"></p>
-            </form>
-          </section>
-
-          <section class="card">
-            <h3>Bulk import tasks</h3>
-            <p class="helper">
-              Format: <code>YYYY-MM-DD | Company | Project | Title #milestone est=2.5</code>
-              <span class="helper">Separators: |  _  tab, or 2+ spaces. Line breaks: newline or ;;.</span>
-            </p>
-            <textarea id="bulk-input" rows="8" placeholder="Add one task per line"></textarea>
-            <div class="actions">
-              <button id="bulk-import" type="button">Import tasks</button>
-            </div>
-            <p class="helper" id="bulk-message"></p>
-          </section>
-        </div>
+              <p class="helper" id="bulk-message"></p>
+            </section>
+          </div>
+        </section>
       </section>
     </main>
 
