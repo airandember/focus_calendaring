@@ -243,9 +243,6 @@ document.querySelector("#bulk-import").addEventListener("click", async () => {
   }
   let raw = bulkInput.value.trim();
   raw = raw.replace(/;;/g, "\n");
-  if (!raw.includes("\n") && raw.includes(";")) {
-    raw = raw.replace(/;/g, "\n");
-  }
   const lines = raw
     .split("\n")
     .map((line) => line.trim())
