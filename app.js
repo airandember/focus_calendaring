@@ -14,6 +14,9 @@ const refreshButton = document.querySelector("#refresh-day");
 const autoScheduleButton = document.querySelector("#auto-schedule");
 const dayTotal = document.querySelector("#day-total");
 const dayDuration = document.querySelector("#day-duration");
+const focusToggle = document.querySelector("#focus-toggle");
+const focusProject = document.querySelector("#focus-project");
+const focusStatus = document.querySelector("#focus-status");
 
 const taskForm = document.querySelector("#task-form");
 const taskMessage = document.querySelector("#task-message");
@@ -21,6 +24,7 @@ const bulkInput = document.querySelector("#bulk-input");
 const bulkMessage = document.querySelector("#bulk-message");
 
 const dayMap = document.querySelector("#day-map");
+const calendarOverview = document.querySelector("#calendar-overview");
 const milestonesEl = document.querySelector("#milestones");
 const balanceEl = document.querySelector("#balance");
 
@@ -61,6 +65,11 @@ function minutesToDuration(minutes) {
 
 const WORK_START = 9 * 60;
 const WORK_END = 17 * 60;
+const AUTO_CONT_MARKER = "[auto-cont]";
+const OVERVIEW_DAYS = 10;
+
+let focusEnabled = false;
+let focusKey = "";
 
 function formatHours(hoursValue) {
   if (!hoursValue) return "";
@@ -91,6 +100,32 @@ function getNextWeekday(dateString) {
     cursor = addDays(cursor, 1);
   }
   return cursor;
+}
+
+function getUpcomingWeekdays(startDate, count) {
+  const days = [];
+  let cursor = getNextWeekday(startDate);
+  while (days.length < count) {
+    if (!isWeekend(cursor)) {
+      days.push(cursor);
+    }
+    cursor = addDays(cursor, 1);
+  }
+  return days;
+}
+
+function getProjectKey(task) {
+  const company = task.company || "Unassigned";
+  const project = task.project || "General";
+  return `${company} · ${project}`;
+}
+
+function updateFocusStatus() {
+  if (!focusEnabled || !focusKey) {
+    focusStatus.textContent = "Neutral";
+    return;
+  }
+  focusStatus.textContent = `High Focus: ${focusKey}`;
 }
 
 function getCurrentUser() {
@@ -237,16 +272,39 @@ dayPicker.addEventListener("change", () => {
   loadDay();
 });
 
+focusToggle.addEventListener("change", () => {
+  focusEnabled = focusToggle.checked;
+  updateFocusStatus();
+  if (focusEnabled && focusKey) {
+    autoSchedule();
+  } else {
+    loadDay();
+  }
+});
+
+focusProject.addEventListener("change", () => {
+  focusKey = focusProject.value;
+  updateFocusStatus();
+  if (focusEnabled && focusKey) {
+    autoSchedule();
+  } else {
+    loadDay();
+  }
+});
+
 function parseBulkLine(line, userId) {
   const milestone = line.toLowerCase().includes("#milestone");
   let cleaned = line.replace(/#milestone/gi, "").trim();
   let estimatedHours = null;
-  const estimateMatch = cleaned.match(/(?:^|\s)est\s*=\s*([0-9]*\.?[0-9]+)/i);
+  const estimateMatch = cleaned.match(/(?:^|\s)est\s*=\s*([0-9]*\.?[0-9]+)\s*h?/i);
   if (estimateMatch) {
     estimatedHours = Number(estimateMatch[1]);
     cleaned = cleaned.replace(estimateMatch[0], "").trim();
   }
-  const parts = cleaned.split("|").map((part) => part.trim()).filter(Boolean);
+  const parts = cleaned
+    .split(/\s+\|\s+|\s*;\s*|\s+_\s+|\s{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
   if (parts.length < 2) return null;
   const datePart = parts[0];
   const [dateValue, timeRange] = datePart.split(" ").filter(Boolean);
@@ -302,6 +360,105 @@ async function loadDay() {
     return;
   }
   renderDay(data ?? []);
+  await loadOverview();
+}
+
+async function loadOverview() {
+  const user = await getCurrentUser();
+  if (!user) return;
+  const startDay = getNextWeekday(dayPicker.value || todayISO);
+  const endDay = addDays(startDay, 14);
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("user_id", user.id)
+    .gte("task_date", startDay)
+    .lte("task_date", endDay)
+    .order("task_date", { ascending: true });
+
+  if (error) {
+    calendarOverview.innerHTML = `<p class="empty danger">${error.message}</p>`;
+    return;
+  }
+
+  const tasks = data ?? [];
+  syncFocusOptions(tasks);
+  renderOverview(tasks, startDay);
+}
+
+function syncFocusOptions(tasks) {
+  const selected = focusProject.value;
+  const options = new Set();
+  tasks.forEach((task) => {
+    options.add(getProjectKey(task));
+  });
+  const sorted = Array.from(options).sort((a, b) => a.localeCompare(b));
+  focusProject.innerHTML = "";
+  const allOption = document.createElement("option");
+  allOption.value = "";
+  allOption.textContent = "All projects";
+  focusProject.appendChild(allOption);
+  sorted.forEach((key) => {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = key;
+    focusProject.appendChild(option);
+  });
+  focusProject.value = sorted.includes(selected) ? selected : "";
+  focusKey = focusProject.value;
+  updateFocusStatus();
+}
+
+function renderOverview(tasks, startDay) {
+  const days = getUpcomingWeekdays(startDay, OVERVIEW_DAYS);
+  const tasksByDate = days.reduce((map, day) => {
+    map[day] = [];
+    return map;
+  }, {});
+  tasks.forEach((task) => {
+    if (tasksByDate[task.task_date]) {
+      tasksByDate[task.task_date].push(task);
+    }
+  });
+
+  const list = document.createElement("div");
+  list.className = "calendar-list";
+
+  days.forEach((day) => {
+    const items = tasksByDate[day] || [];
+    const scheduledMinutes = items.reduce((sum, task) => {
+      if (!task.start_time || !task.end_time) return sum;
+      return sum + Math.max(toMinutes(task.end_time) - toMinutes(task.start_time), 0);
+    }, 0);
+    const utilization = Math.min(scheduledMinutes / (WORK_END - WORK_START), 1);
+    const focusedCount = focusKey
+      ? items.filter((task) => getProjectKey(task) === focusKey).length
+      : 0;
+
+    const dayCard = document.createElement("div");
+    dayCard.className = "calendar-day";
+    if ((dayPicker.value || todayISO) === day) {
+      dayCard.classList.add("active");
+    }
+    dayCard.innerHTML = `
+      <strong>${day}</strong>
+      <div class="calendar-meta">
+        <span>${items.length} tasks</span>
+        <span>${minutesToDuration(scheduledMinutes)}</span>
+        ${focusedCount ? `<span>${focusedCount} focused</span>` : ""}
+      </div>
+      <div class="calendar-bar"><span style="width:${utilization * 100}%"></span></div>
+    `;
+    dayCard.addEventListener("click", () => {
+      dayPicker.value = day;
+      document.querySelector("#task-date").value = day;
+      loadDay();
+    });
+    list.appendChild(dayCard);
+  });
+
+  calendarOverview.innerHTML = "";
+  calendarOverview.appendChild(list);
 }
 
 function renderDay(tasks) {
@@ -322,10 +479,18 @@ function renderTimeline(tasks) {
     dayMap.innerHTML = `<p class="empty">No tasks scheduled yet.</p>`;
     return;
   }
+  const previousPositions = new Map();
+  dayMap.querySelectorAll(".task-item").forEach((item) => {
+    previousPositions.set(item.dataset.taskId, item.getBoundingClientRect());
+  });
   dayMap.innerHTML = "";
   tasks.forEach((task) => {
     const item = document.createElement("div");
     item.className = "task-item";
+    item.dataset.taskId = task.id;
+    if (focusEnabled && focusKey && getProjectKey(task) === focusKey) {
+      item.classList.add("focused");
+    }
     const header = document.createElement("div");
     header.className = "task-header";
     header.innerHTML = `
@@ -349,6 +514,27 @@ function renderTimeline(tasks) {
       item.appendChild(notes);
     }
     dayMap.appendChild(item);
+  });
+
+  requestAnimationFrame(() => {
+    dayMap.querySelectorAll(".task-item").forEach((item) => {
+      const previous = previousPositions.get(item.dataset.taskId);
+      const current = item.getBoundingClientRect();
+      if (previous) {
+        const deltaY = previous.top - current.top;
+        if (Math.abs(deltaY) > 1) {
+          item.animate(
+            [{ transform: `translateY(${deltaY}px)` }, { transform: "translateY(0)" }],
+            { duration: 420, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" }
+          );
+        }
+      } else {
+        item.animate(
+          [{ opacity: 0, transform: "scale(0.98)" }, { opacity: 1, transform: "scale(1)" }],
+          { duration: 260, easing: "ease-out" }
+        );
+      }
+    });
   });
 
   dayMap.querySelectorAll("button[data-task-id]").forEach((button) => {
@@ -391,7 +577,7 @@ function renderBalance(tasks) {
   }
   const stats = {};
   tasks.forEach((task) => {
-    const key = `${task.company || "Unassigned"} · ${task.project || "General"}`;
+    const key = getProjectKey(task);
     if (!stats[key]) {
       stats[key] = { count: 0, minutes: 0 };
     }
@@ -420,6 +606,19 @@ async function autoSchedule() {
   if (!user) return;
 
   const startDay = getNextWeekday(dayPicker.value || todayISO);
+  const allowReshuffle = focusEnabled && focusKey;
+  if (allowReshuffle) {
+    const { error: deleteError } = await supabase
+      .from("tasks")
+      .delete()
+      .eq("user_id", user.id)
+      .ilike("notes", `%${AUTO_CONT_MARKER}%`);
+    if (deleteError) {
+      setMessage(taskMessage, deleteError.message, "error");
+      return;
+    }
+  }
+
   const { data, error } = await supabase
     .from("tasks")
     .select("*")
@@ -433,17 +632,19 @@ async function autoSchedule() {
   }
 
   const tasks = data ?? [];
-  const unscheduled = tasks.filter(
-    (task) => (!task.start_time || !task.end_time) && task.estimated_hours
-  );
-  if (!unscheduled.length) {
+  const schedulable = allowReshuffle
+    ? tasks.filter((task) => task.estimated_hours)
+    : tasks.filter((task) => (!task.start_time || !task.end_time) && task.estimated_hours);
+  if (!schedulable.length) {
     setMessage(taskMessage, "No estimated tasks to schedule.");
     return;
   }
 
   const busyByDate = new Map();
+  const schedulableIds = new Set(schedulable.map((task) => task.id));
   tasks.forEach((task) => {
     if (!task.start_time || !task.end_time) return;
+    if (schedulableIds.has(task.id)) return;
     const start = toMinutes(task.start_time);
     const end = toMinutes(task.end_time);
     if (!busyByDate.has(task.task_date)) {
@@ -454,15 +655,27 @@ async function autoSchedule() {
 
   const updates = [];
   const inserts = [];
-  const queue = unscheduled.map((task) => ({
-    task,
-    remainingMinutes: Math.ceil(task.estimated_hours * 60),
-    isFirstSegment: true,
-  }));
-  const CHUNK_MINUTES = 90;
+  const useFocus = focusEnabled && focusKey;
+  const focusQueue = [];
+  const normalQueue = [];
+  const orderedTasks = schedulable.slice();
+  orderedTasks.forEach((task) => {
+    const entry = {
+      task,
+      remainingMinutes: Math.ceil(task.estimated_hours * 60),
+      isFirstSegment: true,
+    };
+    if (useFocus && getProjectKey(task) === focusKey) {
+      focusQueue.push(entry);
+    } else {
+      normalQueue.push(entry);
+    }
+  });
+  const CHUNK_MINUTES = useFocus ? 120 : 90;
+  let focusBurst = useFocus ? 2 : 0;
   let cursorDate = startDay;
 
-  while (queue.length) {
+  while (focusQueue.length || normalQueue.length) {
     cursorDate = getNextWeekday(cursorDate);
     const busy = (busyByDate.get(cursorDate) ?? []).slice().sort((a, b) => a[0] - b[0]);
     const freeSlots = getFreeSlots(busy);
@@ -474,8 +687,20 @@ async function autoSchedule() {
 
     for (const slot of freeSlots) {
       let slotCursor = slot[0];
-      while (slotCursor < slot[1] && queue.length) {
-        const current = queue.shift();
+      while (slotCursor < slot[1] && (focusQueue.length || normalQueue.length)) {
+        let current = null;
+        if (useFocus && focusQueue.length && focusBurst > 0) {
+          current = focusQueue.shift();
+          focusBurst -= 1;
+        } else if (normalQueue.length) {
+          current = normalQueue.shift();
+          focusBurst = useFocus ? 2 : 0;
+        } else if (focusQueue.length) {
+          current = focusQueue.shift();
+          focusBurst = useFocus ? 1 : 0;
+        } else {
+          break;
+        }
         const remainingInSlot = slot[1] - slotCursor;
         const chunkMinutes = Math.min(
           current.remainingMinutes,
@@ -493,12 +718,15 @@ async function autoSchedule() {
           });
           current.isFirstSegment = false;
         } else {
+          const baseNotes = current.task.notes
+            ? `${current.task.notes}\n${AUTO_CONT_MARKER}`
+            : AUTO_CONT_MARKER;
           inserts.push({
             user_id: current.task.user_id,
             title: `${current.task.title} (cont.)`,
             company: current.task.company,
             project: current.task.project,
-            notes: current.task.notes,
+            notes: baseNotes,
             task_date: cursorDate,
             start_time: toTimeString(slotCursor),
             end_time: toTimeString(slotEnd),
@@ -511,13 +739,17 @@ async function autoSchedule() {
         slotCursor = slotEnd;
 
         if (current.remainingMinutes > 0) {
-          queue.push(current);
+          if (useFocus && getProjectKey(current.task) === focusKey) {
+            focusQueue.push(current);
+          } else {
+            normalQueue.push(current);
+          }
         }
       }
     }
 
     busyByDate.set(cursorDate, busy);
-    if (queue.length) {
+    if (focusQueue.length || normalQueue.length) {
       cursorDate = addDays(cursorDate, 1);
     }
   }
@@ -541,7 +773,9 @@ async function autoSchedule() {
     }
   }
 
-  setMessage(taskMessage, `Auto-scheduled ${unscheduled.length} task(s).`);
+  const scheduledCount = schedulable.length;
+  const focusTag = useFocus ? ` with focus on ${focusKey}` : "";
+  setMessage(taskMessage, `Auto-scheduled ${scheduledCount} task(s)${focusTag}.`);
   await loadDay();
 }
 

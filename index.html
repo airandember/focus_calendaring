@@ -48,10 +48,37 @@
             <button id="refresh-day" class="secondary" type="button">Refresh</button>
             <button id="auto-schedule" type="button">Auto schedule</button>
           </div>
+          <div class="toolbar-group focus-controls">
+            <label class="checkbox">
+              <input id="focus-toggle" type="checkbox" />
+              High Focus
+            </label>
+            <label>
+              Focus project
+              <select id="focus-project"></select>
+            </label>
+            <span class="stat" id="focus-status">Neutral</span>
+          </div>
           <div class="toolbar-group">
             <span class="stat" id="day-total">0 tasks</span>
             <span class="stat" id="day-duration">0h</span>
           </div>
+        </div>
+
+        <div class="layout">
+          <section class="card">
+            <h3>Day map</h3>
+            <div id="day-map" class="timeline"></div>
+          </section>
+
+          <section class="card">
+            <h3>Calendar overview</h3>
+            <div id="calendar-overview"></div>
+            <h3>Milestones</h3>
+            <div id="milestones"></div>
+            <h3>Workload balance</h3>
+            <div id="balance"></div>
+          </section>
         </div>
 
         <div class="layout">
@@ -106,27 +133,14 @@
           <section class="card">
             <h3>Bulk import tasks</h3>
             <p class="helper">
-              Format: <code>YYYY-MM-DD 09:00-10:30 | Company | Project | Title #milestone est=2.5</code>
+              Format: <code>YYYY-MM-DD | Company | Project | Title #milestone est=2.5</code>
+              <span class="helper">Separators: | ;  _  or 2+ spaces.</span>
             </p>
             <textarea id="bulk-input" rows="8" placeholder="Add one task per line"></textarea>
             <div class="actions">
               <button id="bulk-import" type="button">Import tasks</button>
             </div>
             <p class="helper" id="bulk-message"></p>
-          </section>
-        </div>
-
-        <div class="layout">
-          <section class="card">
-            <h3>Day map</h3>
-            <div id="day-map" class="timeline"></div>
-          </section>
-
-          <section class="card">
-            <h3>Milestones</h3>
-            <div id="milestones"></div>
-            <h3>Workload balance</h3>
-            <div id="balance"></div>
           </section>
         </div>
       </section>
