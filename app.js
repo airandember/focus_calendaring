@@ -241,7 +241,16 @@ document.querySelector("#bulk-import").addEventListener("click", async () => {
     setMessage(bulkMessage, "Please sign in first.", "error");
     return;
   }
-  const lines = bulkInput.value.split("\n").map((line) => line.trim()).filter(Boolean);
+  let raw = bulkInput.value.trim();
+  raw = raw.replace(/;;/g, "\n");
+  if (!raw.includes("\n") && raw.includes(";")) {
+    raw = raw.replace(/;/g, "\n");
+  }
+  const lines = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .map((line) => line.replace(/;+\s*$/, ""))
+    .filter(Boolean);
   if (!lines.length) {
     setMessage(bulkMessage, "Add at least one line to import.", "error");
     return;
