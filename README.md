@@ -45,6 +45,6 @@ YYYY-MM-DD | Company | Project | Task title #milestone est=2.5
 ```
 Notes:
 - Time range is optional. If provided, use `09:00-10:30` after the date.
-- Separators supported: `|`, `;`, ` _ ` (space underscore space), or 2+ spaces.
+- Separators supported: `|`, `;`, ` _ ` (space underscore space), tab, or 2+ spaces.
 - `#milestone` can appear anywhere in the line.
 - `est=` defines estimated hours for auto-scheduling (supports `est=4h`).

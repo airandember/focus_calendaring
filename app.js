@@ -295,6 +295,7 @@ focusProject.addEventListener("change", () => {
 function parseBulkLine(line, userId) {
   const milestone = line.toLowerCase().includes("#milestone");
   let cleaned = line.replace(/#milestone/gi, "").trim();
+  cleaned = cleaned.replace(/[\u00a0\u2000-\u200b\u202f\u205f\u3000]/g, " ");
   let estimatedHours = null;
   const estimateMatch = cleaned.match(/(?:^|\s)est\s*=\s*([0-9]*\.?[0-9]+)\s*h?/i);
   if (estimateMatch) {
@@ -302,7 +303,7 @@ function parseBulkLine(line, userId) {
     cleaned = cleaned.replace(estimateMatch[0], "").trim();
   }
   const parts = cleaned
-    .split(/\s+\|\s+|\s*;\s*|\s+_\s+|\s{2,}/)
+    .split(/\s+\|\s+|\s*;\s*|\s+_\s+|\t+| {2,}/)
     .map((part) => part.trim())
     .filter(Boolean);
   if (parts.length < 2) return null;
