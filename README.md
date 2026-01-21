@@ -25,6 +25,10 @@ create table if not exists public.tasks (
   start_time time,
   end_time time,
   estimated_hours numeric,
+  status text default 'planned',
+  actual_start time,
+  actual_end time,
+  completed_at timestamptz,
   is_milestone boolean default false,
   created_at timestamptz default now()
 );
@@ -36,6 +40,15 @@ create policy "Users can manage their tasks"
   for all
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+```
+
+If you already created the table, add tracking columns:
+```sql
+alter table public.tasks
+  add column if not exists status text default 'planned',
+  add column if not exists actual_start time,
+  add column if not exists actual_end time,
+  add column if not exists completed_at timestamptz;
 ```
 
 ## Bulk import format

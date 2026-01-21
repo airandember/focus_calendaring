@@ -18,6 +18,7 @@ const focusToggle = document.querySelector("#focus-toggle");
 const focusProject = document.querySelector("#focus-project");
 const focusStatus = document.querySelector("#focus-status");
 const selectedDayLabel = document.querySelector("#selected-day-label");
+const dayViewCard = document.querySelector("#day-view-card");
 
 const taskForm = document.querySelector("#task-form");
 const taskMessage = document.querySelector("#task-message");
@@ -75,13 +76,26 @@ function minutesToDuration(minutes) {
 
 const WORK_START = 9 * 60;
 const WORK_END = 17 * 60;
+const BREAK_MINUTES = 15;
 const AUTO_CONT_MARKER = "[auto-cont]";
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+const PROJECT_COLORS = [
+  "#60a5fa",
+  "#f59e0b",
+  "#34d399",
+  "#f472b6",
+  "#a78bfa",
+  "#f87171",
+  "#38bdf8",
+  "#fbbf24",
+];
 
 let focusEnabled = false;
 let focusKey = "";
 let currentMonth = new Date(`${todayISO}T00:00:00`);
 currentMonth.setDate(1);
+let todayTaskIndex = new Map();
 
 function formatHours(hoursValue) {
   if (!hoursValue) return "";
@@ -107,6 +121,14 @@ function formatDateParts(year, monthIndex, day) {
   return `${year}-${mm}-${dd}`;
 }
 
+function getNowTimeString() {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(
+    2,
+    "0"
+  )}`;
+}
+
 function isWeekend(dateString) {
   const day = new Date(`${dateString}T00:00:00`).getDay();
   return day === 0 || day === 6;
@@ -120,10 +142,33 @@ function getNextWeekday(dateString) {
   return cursor;
 }
 
+function getNextWorkdayDate(dateString) {
+  let cursor = addDays(dateString, 1);
+  while (isWeekend(cursor)) {
+    cursor = addDays(cursor, 1);
+  }
+  return cursor;
+}
+
 function getProjectKey(task) {
   const company = task.company || "Unassigned";
   const project = task.project || "General";
   return `${company} · ${project}`;
+}
+
+function getTaskStatus(task) {
+  if (task.status) return task.status;
+  if (task.completed_at || task.actual_end) return "completed";
+  return "planned";
+}
+
+function getProjectColor(task) {
+  const key = getProjectKey(task);
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 31 + key.charCodeAt(i)) % PROJECT_COLORS.length;
+  }
+  return PROJECT_COLORS[hash];
 }
 
 function updateFocusStatus() {
@@ -264,6 +309,7 @@ taskForm.addEventListener("submit", async (event) => {
     is_milestone: document.querySelector("#task-milestone").checked,
     estimated_hours: parseFloat(document.querySelector("#task-hours").value) || null,
     notes: document.querySelector("#task-notes").value.trim(),
+    status: "planned",
   };
 
 
@@ -421,6 +467,7 @@ function parseBulkLine(line, userId) {
     end_time: endTime,
     is_milestone: milestone,
     estimated_hours: Number.isFinite(estimatedHours) ? estimatedHours : null,
+    status: "planned",
   };
 }
 
@@ -439,6 +486,7 @@ async function loadDay() {
   const user = await getCurrentUser();
   if (!user) return;
   const day = dayPicker.value || todayISO;
+  await rollOverOverdueTasks(user);
   const { data, error } = await supabase
     .from("tasks")
     .select("*")
@@ -449,9 +497,90 @@ async function loadDay() {
     dayMap.innerHTML = `<p class="empty danger">${error.message}</p>`;
     return;
   }
-  console.log(data);
-  renderDay(data ?? []);
+  const tasks = data ?? [];
+  const adjusted = await adjustOverrunIfNeeded(user, tasks, day);
+  if (adjusted) {
+    await loadDay();
+    return;
+  }
+  renderDay(tasks);
   await loadToday();
+}
+
+async function rollOverOverdueTasks(user) {
+  const targetDay = getNextWeekday(todayISO);
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("user_id", user.id)
+    .lt("task_date", todayISO);
+  if (error) {
+    setMessage(taskMessage, error.message, "error");
+    return;
+  }
+  const overdue = (data ?? []).filter((task) => getTaskStatus(task) !== "completed");
+  if (!overdue.length) return;
+
+  for (const task of overdue) {
+    const { error: updateError } = await supabase
+      .from("tasks")
+      .update({ task_date: targetDay })
+      .eq("id", task.id);
+    if (updateError) {
+      setMessage(taskMessage, updateError.message, "error");
+      return;
+    }
+  }
+}
+
+async function adjustOverrunIfNeeded(user, tasks, day) {
+  if (day !== todayISO) return false;
+  const inProgress = tasks.find(
+    (task) =>
+      getTaskStatus(task) === "in_progress" && task.start_time && task.end_time
+  );
+  if (!inProgress) return false;
+  const nowMinutes = toMinutes(getNowTimeString());
+  const scheduledEnd = toMinutes(inProgress.end_time);
+  if (nowMinutes <= scheduledEnd) return false;
+
+  const overrun = nowMinutes - scheduledEnd;
+  const updates = [];
+
+  updates.push({
+    id: inProgress.id,
+    end_time: toTimeString(nowMinutes),
+  });
+
+  tasks
+    .filter(
+      (task) =>
+        task.id !== inProgress.id &&
+        getTaskStatus(task) !== "completed" &&
+        task.start_time &&
+        task.end_time &&
+        toMinutes(task.start_time) >= scheduledEnd
+    )
+    .sort((a, b) => toMinutes(a.start_time) - toMinutes(b.start_time))
+    .forEach((task) => {
+      const start = toMinutes(task.start_time) + overrun;
+      const end = toMinutes(task.end_time) + overrun;
+      updates.push({
+        id: task.id,
+        start_time: toTimeString(start),
+        end_time: toTimeString(end),
+      });
+    });
+
+  for (const update of updates) {
+    const { error } = await supabase.from("tasks").update(update).eq("id", update.id);
+    if (error) {
+      setMessage(taskMessage, error.message, "error");
+      return false;
+    }
+  }
+
+  return updates.length > 0;
 }
 
 async function loadMonth() {
@@ -553,8 +682,12 @@ function renderMonthCalendar(tasks) {
       cell.classList.add("selected");
     }
     const indicatorCount = Math.min(items.length, 3);
-    const indicators = Array.from({ length: indicatorCount })
-      .map(() => "<span class='indicator-dot'></span>")
+    const indicators = items
+      .slice(0, indicatorCount)
+      .map((task) => {
+        const color = getProjectColor(task);
+        return `<span class="indicator-dot" style="background:${color}"></span>`;
+      })
       .join("");
     cell.innerHTML = `
       <div class="calendar-cell-top">
@@ -597,21 +730,30 @@ async function loadToday() {
 }
 
 function renderDay(tasks) {
-  renderTimeline(tasks);
-  renderMilestones(tasks);
-  renderBalance(tasks);
-  const totalMinutes = tasks.reduce((sum, task) => {
+  const deduped = dedupeOverlaps(tasks);
+  renderTimeline(deduped);
+  renderMilestones(deduped);
+  renderBalance(deduped);
+  if (dayViewCard) {
+    if (tasks.length) {
+      const accent = getProjectColor(tasks[0]);
+      dayViewCard.style.setProperty("--day-accent", accent);
+    } else {
+      dayViewCard.style.removeProperty("--day-accent");
+    }
+  }
+  const totalMinutes = deduped.reduce((sum, task) => {
     if (!task.start_time || !task.end_time) return sum;
     const diff = toMinutes(task.end_time) - toMinutes(task.start_time);
     return sum + Math.max(diff, 0);
   }, 0);
-  dayTotal.textContent = `${tasks.length} tasks`;
+  dayTotal.textContent = `${deduped.length} tasks`;
   dayDuration.textContent = minutesToDuration(totalMinutes);
   selectedDayLabel.textContent = `Day view: ${dayPicker.value || todayISO}`;
 }
 
 function renderToday(tasks) {
-  renderHourlyBreakdown(tasks);
+  renderTodayBlocks(tasks);
   const totalMinutes = tasks.reduce((sum, task) => {
     if (!task.start_time || !task.end_time) return sum;
     return sum + Math.max(toMinutes(task.end_time) - toMinutes(task.start_time), 0);
@@ -620,59 +762,222 @@ function renderToday(tasks) {
     <div class="balance-list">
       <div class="balance-item"><span>${tasks.length} tasks</span><span>${minutesToDuration(totalMinutes)}</span></div>
       <div class="balance-item"><span>Milestones</span><span>${tasks.filter((task) => task.is_milestone).length}</span></div>
+      <div class="balance-item"><span>Completed</span><span>${tasks.filter((task) => getTaskStatus(task) === "completed").length}</span></div>
     </div>
   `;
 }
 
-function renderHourlyBreakdown(tasks) {
-  const startHour = 9;
-  const endHour = 17;
+function renderTodayBlocks(tasks) {
+  const cleaned = dedupeOverlaps(tasks);
+  const unscheduled = tasks.filter((task) => !task.start_time || !task.end_time);
+
   todayMap.innerHTML = "";
-  for (let hour = startHour; hour < endHour; hour += 1) {
-    const slotStart = hour * 60;
-    const slotEnd = (hour + 1) * 60;
-    const matches = tasks.filter((task) => {
-      if (!task.start_time || !task.end_time) return false;
-      const start = toMinutes(task.start_time);
-      const end = toMinutes(task.end_time);
-      return start < slotEnd && end > slotStart;
-    });
-    const row = document.createElement("div");
-    row.className = "hour-row";
-    const label = document.createElement("div");
-    label.className = "hour-label";
-    label.textContent = `${String(hour).padStart(2, "0")}:00`;
-    const list = document.createElement("div");
-    list.className = "hour-tasks";
-    if (!matches.length) {
-      list.innerHTML = `<span class="empty">Open focus block</span>`;
-    } else {
-      matches.forEach((task) => {
-        const item = document.createElement("div");
-        item.className = "hour-task";
-        if (focusEnabled && focusKey && getProjectKey(task) === focusKey) {
-          item.classList.add("focused");
-        }
-        item.textContent = `${task.title} (${formatTimeRange(task.start_time, task.end_time)})`;
-        list.appendChild(item);
-      });
-    }
-    row.append(label, list);
-    todayMap.appendChild(row);
+  todayTaskIndex = new Map();
+  tasks.forEach((task) => todayTaskIndex.set(task.id, task));
+  if (!cleaned.length && !unscheduled.length) {
+    todayMap.innerHTML = `<p class="empty">No tasks scheduled today.</p>`;
+    return;
   }
 
-  const unscheduled = tasks.filter((task) => !task.start_time || !task.end_time);
-  if (unscheduled.length) {
-    const row = document.createElement("div");
-    row.className = "hour-row";
-    row.innerHTML = `
-      <div class="hour-label">Unscheduled</div>
-      <div class="hour-tasks">
-        ${unscheduled.map((task) => `<div class="hour-task">${escapeHtml(task.title)}</div>`).join("")}
+  const list = document.createElement("div");
+  list.className = "today-list";
+
+  let lastEnd = null;
+  cleaned.forEach((task, index) => {
+    const start = toMinutes(task.start_time);
+    const end = toMinutes(task.end_time);
+    const item = document.createElement("div");
+    item.className = "today-item";
+    const status = getTaskStatus(task);
+    const accentColor = getProjectColor(task);
+    item.style.setProperty("--task-accent", accentColor);
+    if (focusEnabled && focusKey && getProjectKey(task) === focusKey) {
+      item.classList.add("focused");
+    }
+    if (status === "completed") {
+      item.classList.add("completed");
+    }
+    const canStart = status === "planned";
+    const canFinish = status === "in_progress";
+    item.innerHTML = `
+      <div class="today-time">${formatTimeRange(task.start_time, task.end_time)}</div>
+      <div class="today-title">${escapeHtml(task.title)}</div>
+      <div class="today-actions">
+        ${status === "completed" ? `<span class="pill done">Done</span>` : ""}
+        ${canStart ? `<button class="secondary" data-action="start" data-task-id="${task.id}">Start</button>` : ""}
+        ${canFinish ? `<button class="secondary" data-action="finish" data-task-id="${task.id}">Finish</button>` : ""}
+        ${status === "in_progress" ? `<button class="secondary" data-action="stop" data-task-id="${task.id}">Stop</button>` : ""}
+        <button class="secondary" data-action="reschedule" data-task-id="${task.id}">Reschedule</button>
       </div>
     `;
-    todayMap.appendChild(row);
+    list.appendChild(item);
+    lastEnd = end;
+
+    const nextTask = cleaned[index + 1];
+    if (nextTask) {
+      const nextStart = toMinutes(nextTask.start_time);
+      const breakStart = end;
+      const breakEnd = end + BREAK_MINUTES;
+      const breakItem = document.createElement("div");
+      breakItem.className = "today-break";
+      if (nextStart < breakEnd) {
+        breakItem.classList.add("break-missing");
+        breakItem.textContent = `Break ${BREAK_MINUTES}m needed (next ${toTimeString(
+          nextStart
+        )})`;
+      } else {
+        breakItem.textContent = `Break ${BREAK_MINUTES}m (${toTimeString(
+          breakStart
+        )} - ${toTimeString(breakEnd)})`;
+      }
+      list.appendChild(breakItem);
+    }
+  });
+
+  if (unscheduled.length) {
+    const block = document.createElement("div");
+    block.className = "today-unscheduled";
+    block.innerHTML = `
+      <div class="today-time">Unscheduled</div>
+      <div class="today-title">
+        ${unscheduled.map((task) => escapeHtml(task.title)).join(", ")}
+      </div>
+    `;
+    list.appendChild(block);
   }
+
+  todayMap.appendChild(list);
+
+  todayMap.querySelectorAll("button[data-task-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const action = button.dataset.action;
+      if (action === "start") {
+        await markTaskStarted(button.dataset.taskId);
+        return;
+      }
+      if (action === "finish") {
+        await markTaskFinished(button.dataset.taskId);
+        return;
+      }
+      if (action === "stop") {
+        await markTaskStopped(button.dataset.taskId);
+        return;
+      }
+      if (action === "reschedule") {
+        const task = todayTaskIndex.get(button.dataset.taskId);
+        if (task) {
+          await rescheduleTask(task);
+        }
+      }
+    });
+  });
+}
+
+function dedupeOverlaps(tasks) {
+  const scheduled = tasks
+    .filter((task) => task.start_time && task.end_time)
+    .sort((a, b) => toMinutes(a.start_time) - toMinutes(b.start_time));
+  const cleaned = [];
+  scheduled.forEach((task) => {
+    const start = toMinutes(task.start_time);
+    const end = toMinutes(task.end_time);
+    const isAutoCont =
+      (typeof task.title === "string" && task.title.includes("(cont.)")) ||
+      (typeof task.notes === "string" && task.notes.includes(AUTO_CONT_MARKER));
+    const overlappingIndex = cleaned.findIndex((existing) => {
+      const existingStart = toMinutes(existing.start_time);
+      const existingEnd = toMinutes(existing.end_time);
+      return start < existingEnd && end > existingStart;
+    });
+    if (overlappingIndex === -1) {
+      cleaned.push(task);
+      return;
+    }
+    const existing = cleaned[overlappingIndex];
+    const existingIsAuto =
+      (typeof existing.title === "string" && existing.title.includes("(cont.)")) ||
+      (typeof existing.notes === "string" && existing.notes.includes(AUTO_CONT_MARKER));
+    if (existingIsAuto && !isAutoCont) {
+      cleaned[overlappingIndex] = task;
+    }
+  });
+  return cleaned;
+}
+
+async function markTaskStarted(taskId) {
+  const nowTime = getNowTimeString();
+  const { error } = await supabase
+    .from("tasks")
+    .update({
+      status: "in_progress",
+      actual_start: nowTime,
+    })
+    .eq("id", taskId);
+  if (error) {
+    setMessage(taskMessage, error.message, "error");
+    return;
+  }
+  await loadDay();
+  await loadToday();
+}
+
+async function markTaskStopped(taskId) {
+  const nowTime = getNowTimeString();
+  const { error } = await supabase
+    .from("tasks")
+    .update({
+      status: "planned",
+      actual_end: nowTime,
+    })
+    .eq("id", taskId);
+  if (error) {
+    setMessage(taskMessage, error.message, "error");
+    return;
+  }
+  await loadDay();
+  await loadToday();
+}
+
+async function markTaskFinished(taskId) {
+  const nowTime = getNowTimeString();
+  const nowDate = new Date().toISOString();
+  const { error } = await supabase
+    .from("tasks")
+    .update({
+      status: "completed",
+      actual_end: nowTime,
+      completed_at: nowDate,
+      end_time: nowTime,
+    })
+    .eq("id", taskId);
+  if (error) {
+    setMessage(taskMessage, error.message, "error");
+    return;
+  }
+  await loadDay();
+  await loadToday();
+}
+
+async function rescheduleTask(task) {
+  const newDate = getNextWorkdayDate(task.task_date);
+  const updates = {
+    task_date: newDate,
+  };
+  if (task.start_time && task.end_time) {
+    updates.start_time = task.start_time;
+    updates.end_time = task.end_time;
+  }
+  if (getTaskStatus(task) === "in_progress") {
+    updates.status = "planned";
+  }
+  const { error } = await supabase.from("tasks").update(updates).eq("id", task.id);
+  if (error) {
+    setMessage(taskMessage, error.message, "error");
+    return;
+  }
+  await loadDay();
+  await loadToday();
+  await loadMonth();
 }
 
 function renderTimeline(tasks) {
@@ -689,19 +994,35 @@ function renderTimeline(tasks) {
     const item = document.createElement("div");
     item.className = "task-item";
     item.dataset.taskId = task.id;
+    const status = getTaskStatus(task);
     const titleText =
       (typeof task.title === "string" && task.title.trim()) ||
       (typeof task.project === "string" && task.project.trim()) ||
       (typeof task.company === "string" && task.company.trim()) ||
       "Untitled task";
+    const accentColor = getProjectColor(task);
+    item.style.setProperty("--task-accent", accentColor);
     if (focusEnabled && focusKey && getProjectKey(task) === focusKey) {
       item.classList.add("focused");
     }
+    if (status === "completed") {
+      item.classList.add("completed");
+    }
+    if (status === "in_progress") {
+      item.classList.add("in-progress");
+    }
     const header = document.createElement("div");
     header.className = "task-header";
+    const canStart = status === "planned";
+    const canFinish = status === "in_progress";
     header.innerHTML = `
       <strong class="task-title">${escapeHtml(titleText)}</strong>
-      <button class="secondary" data-task-id="${task.id}">Delete</button>
+      <div class="task-actions">
+        ${status === "completed" ? `<span class="pill done">Done</span>` : ""}
+        ${canStart ? `<button class="secondary" data-action="start" data-task-id="${task.id}">Start</button>` : ""}
+        ${canFinish ? `<button class="secondary" data-action="finish" data-task-id="${task.id}">Finish</button>` : ""}
+        <button class="secondary" data-action="delete" data-task-id="${task.id}">Delete</button>
+      </div>
     `;
     const meta = document.createElement("div");
     meta.className = "task-meta";
@@ -745,11 +1066,25 @@ function renderTimeline(tasks) {
 
   dayMap.querySelectorAll("button[data-task-id]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const { error } = await supabase.from("tasks").delete().eq("id", button.dataset.taskId);
-      if (error) {
-        dayMap.insertAdjacentHTML("beforeend", `<p class="empty danger">${error.message}</p>`);
-      } else {
-        loadDay();
+      const action = button.dataset.action;
+      if (action === "delete") {
+        const { error } = await supabase.from("tasks").delete().eq("id", button.dataset.taskId);
+        if (error) {
+          dayMap.insertAdjacentHTML(
+            "beforeend",
+            `<p class="empty danger">${error.message}</p>`
+          );
+        } else {
+          loadDay();
+        }
+        return;
+      }
+      if (action === "start") {
+        await markTaskStarted(button.dataset.taskId);
+        return;
+      }
+      if (action === "finish") {
+        await markTaskFinished(button.dataset.taskId);
       }
     });
   });
@@ -839,8 +1174,13 @@ async function autoSchedule() {
 
   const tasks = data ?? [];
   const schedulable = allowReshuffle
-    ? tasks.filter((task) => task.estimated_hours)
-    : tasks.filter((task) => (!task.start_time || !task.end_time) && task.estimated_hours);
+    ? tasks.filter((task) => task.estimated_hours && getTaskStatus(task) !== "completed")
+    : tasks.filter(
+        (task) =>
+          (!task.start_time || !task.end_time) &&
+          task.estimated_hours &&
+          getTaskStatus(task) !== "completed"
+      );
   if (!schedulable.length) {
     setMessage(taskMessage, "No estimated tasks to schedule.");
     return;
@@ -938,11 +1278,17 @@ async function autoSchedule() {
             end_time: toTimeString(slotEnd),
             is_milestone: false,
             estimated_hours: chunkMinutes / 60,
+            status: "planned",
           });
         }
 
         current.remainingMinutes -= chunkMinutes;
         slotCursor = slotEnd;
+        if (slotCursor + BREAK_MINUTES <= slot[1]) {
+          slotCursor += BREAK_MINUTES;
+        } else {
+          slotCursor = slot[1];
+        }
 
         if (current.remainingMinutes > 0) {
           if (useFocus && getProjectKey(current.task) === focusKey) {
