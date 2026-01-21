@@ -76,7 +76,7 @@ function minutesToDuration(minutes) {
 const WORK_START = 9 * 60;
 const WORK_END = 17 * 60;
 const AUTO_CONT_MARKER = "[auto-cont]";
-const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 let focusEnabled = false;
 let focusKey = "";
@@ -266,6 +266,7 @@ taskForm.addEventListener("submit", async (event) => {
     notes: document.querySelector("#task-notes").value.trim(),
   };
 
+
   if (!payload.title || !payload.task_date) {
     setMessage(taskMessage, "Title and day are required.", "error");
     return;
@@ -364,8 +365,9 @@ function parseBulkLine(line, userId) {
     estimatedHours = Number(estimateMatch[1]);
     cleaned = cleaned.replace(estimateMatch[0], "").trim();
   }
-  const parts = cleaned
-    .split(/\s+\|\s+|\s*;\s*|\s+_\s+|\t+| {2,}/)
+  const separatorRegex = /\s+\|\s+|\s+_\s+|\s*::\s*|\t+| {2,}/;
+  let parts = cleaned
+    .split(separatorRegex)
     .map((part) => part.trim())
     .filter(Boolean);
   if (parts.length < 2) return null;
@@ -381,9 +383,34 @@ function parseBulkLine(line, userId) {
     startTime = normalizeTime(start);
     endTime = normalizeTime(end);
   }
-  const title = parts[parts.length - 1];
-  const company = parts.length >= 3 ? parts[1] : "";
-  const project = parts.length >= 4 ? parts[2] : "";
+  let company = "";
+  let project = "";
+  let title = "";
+  if (parts.length >= 4) {
+    company = parts[1];
+    project = parts[2];
+    title = parts.slice(3).join(" ");
+  } else if (parts.length === 3) {
+    company = parts[1];
+    title = parts[2];
+  } else if (parts.length === 2) {
+    title = parts[1];
+  }
+
+  if (!title || title === "::") {
+    const fallback = cleaned.replace(datePart, "").trim();
+    const fallbackParts = fallback.split(separatorRegex).filter(Boolean);
+    if (fallbackParts.length >= 3) {
+      company = fallbackParts[0];
+      project = fallbackParts[1];
+      title = fallbackParts.slice(2).join(" ").trim();
+    } else if (fallbackParts.length === 2) {
+      company = fallbackParts[0];
+      title = fallbackParts[1].trim();
+    } else if (fallback) {
+      title = fallback;
+    }
+  }
   return {
     user_id: userId,
     title,
@@ -422,6 +449,7 @@ async function loadDay() {
     dayMap.innerHTML = `<p class="empty danger">${error.message}</p>`;
     return;
   }
+  console.log(data);
   renderDay(data ?? []);
   await loadToday();
 }
@@ -485,7 +513,7 @@ function renderMonthCalendar(tasks) {
   const monthIndex = currentMonth.getMonth();
   const firstDay = new Date(year, monthIndex, 1);
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-  const offset = (firstDay.getDay() + 6) % 7;
+  const offset = firstDay.getDay();
 
   const tasksByDate = {};
   tasks.forEach((task) => {
@@ -524,10 +552,19 @@ function renderMonthCalendar(tasks) {
     if ((dayPicker.value || todayISO) === dayIso) {
       cell.classList.add("selected");
     }
+    const indicatorCount = Math.min(items.length, 3);
+    const indicators = Array.from({ length: indicatorCount })
+      .map(() => "<span class='indicator-dot'></span>")
+      .join("");
     cell.innerHTML = `
-      <span class="day-number">${day}</span>
-      <span class="day-stats">${items.length} tasks</span>
-      <span class="day-stats">${minutesToDuration(scheduledMinutes)}</span>
+      <div class="calendar-cell-top">
+        <span class="day-number">${day}</span>
+        ${items.length ? `<span class="day-count">${items.length}</span>` : ""}
+      </div>
+      <div class="calendar-cell-bottom">
+        <span class="day-stats">${minutesToDuration(scheduledMinutes)}</span>
+        <div class="calendar-indicators">${indicators}</div>
+      </div>
     `;
     if (items.length) {
       cell.classList.add("has-tasks");
@@ -652,13 +689,18 @@ function renderTimeline(tasks) {
     const item = document.createElement("div");
     item.className = "task-item";
     item.dataset.taskId = task.id;
+    const titleText =
+      (typeof task.title === "string" && task.title.trim()) ||
+      (typeof task.project === "string" && task.project.trim()) ||
+      (typeof task.company === "string" && task.company.trim()) ||
+      "Untitled task";
     if (focusEnabled && focusKey && getProjectKey(task) === focusKey) {
       item.classList.add("focused");
     }
     const header = document.createElement("div");
     header.className = "task-header";
     header.innerHTML = `
-      <strong>${escapeHtml(task.title)}</strong>
+      <strong class="task-title">${escapeHtml(titleText)}</strong>
       <button class="secondary" data-task-id="${task.id}">Delete</button>
     `;
     const meta = document.createElement("div");
@@ -963,7 +1005,8 @@ function getFreeSlots(busyIntervals) {
 }
 
 function escapeHtml(value) {
-  return value.replace(/[&<>"']/g, (char) => {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/[&<>"']/g, (char) => {
     switch (char) {
       case "&":
         return "&amp;";
