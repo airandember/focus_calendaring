@@ -1,4 +1,4 @@
-import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from "./config.js";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -205,7 +205,47 @@ function getCurrentUser() {
   return supabase.auth.getUser().then(({ data }) => data.user);
 }
 
+async function handleRecoveryFromHash() {
+  if (!window.location.hash) return false;
+  const hash = window.location.hash.replace(/^#/, "");
+  const params = new URLSearchParams(hash);
+  const accessToken = params.get("access_token");
+  const refreshToken = params.get("refresh_token");
+  const type = params.get("type");
+  if (!accessToken || !refreshToken) return false;
+
+  const { error } = await supabase.auth.setSession({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  });
+  if (error) {
+    setMessage(authMessage, error.message, "error");
+    return false;
+  }
+
+  window.history.replaceState({}, document.title, window.location.pathname);
+
+  if (type === "recovery") {
+    const newPassword = window.prompt("Enter a new password to finish recovery:");
+    if (!newPassword) {
+      setMessage(authMessage, "Password update canceled.", "error");
+      return true;
+    }
+    const { error: updateError } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
+    if (updateError) {
+      setMessage(authMessage, updateError.message, "error");
+    } else {
+      setMessage(authMessage, "Password updated. You can continue.", "default");
+    }
+  }
+
+  return true;
+}
+
 async function handleAuth() {
+  const recovered = await handleRecoveryFromHash();
   const { data } = await supabase.auth.getSession();
   const session = data.session;
   if (session) {
