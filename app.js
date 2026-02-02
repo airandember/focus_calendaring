@@ -24,6 +24,19 @@ const taskForm = document.querySelector("#task-form");
 const taskMessage = document.querySelector("#task-message");
 const bulkInput = document.querySelector("#bulk-input");
 const bulkMessage = document.querySelector("#bulk-message");
+const projectForm = document.querySelector("#project-form");
+const projectMessage = document.querySelector("#project-message");
+const eventForm = document.querySelector("#event-form");
+const eventMessage = document.querySelector("#event-message");
+const workHoursForm = document.querySelector("#work-hours-form");
+const workHoursMessage = document.querySelector("#work-hours-message");
+const calendarImportForm = document.querySelector("#calendar-import-form");
+const calendarImportMessage = document.querySelector("#calendar-import-message");
+const aiBreakdownButton = document.querySelector("#ai-breakdown");
+const aiInput = document.querySelector("#ai-input");
+const aiMessage = document.querySelector("#ai-message");
+const taskProjectSelect = document.querySelector("#task-project-id");
+const fixedEventsEl = document.querySelector("#fixed-events");
 
 const dayMap = document.querySelector("#day-map");
 const monthGrid = document.querySelector("#month-grid");
@@ -45,6 +58,8 @@ const todayISO = new Date().toISOString().slice(0, 10);
 dayPicker.value = todayISO;
 document.querySelector("#task-date").value = todayISO;
 selectedDayLabel.textContent = `Day view: ${todayISO}`;
+const eventDateInput = document.querySelector("#event-date");
+if (eventDateInput) eventDateInput.value = todayISO;
 
 function setMessage(target, text, tone = "default") {
   if (!target) return;
@@ -96,6 +111,11 @@ let focusKey = "";
 let currentMonth = new Date(`${todayISO}T00:00:00`);
 currentMonth.setDate(1);
 let todayTaskIndex = new Map();
+let dayTaskIndex = new Map();
+let workStartMinutes = WORK_START;
+let workEndMinutes = WORK_END;
+let breakMinutes = BREAK_MINUTES;
+let projectsCache = [];
 
 function formatHours(hoursValue) {
   if (!hoursValue) return "";
@@ -107,6 +127,14 @@ function toTimeString(totalMinutes) {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function toDateStringFromDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function toTimeStringFromDate(date) {
+  return date.toTimeString().slice(0, 5);
 }
 
 function addDays(dateString, days) {
@@ -152,7 +180,10 @@ function getNextWorkdayDate(dateString) {
 
 function getProjectKey(task) {
   const company = task.company || "Unassigned";
-  const project = task.project || "General";
+  const linkedProject = task.project_id
+    ? projectsCache.find((item) => item.id === task.project_id)?.title
+    : null;
+  const project = linkedProject || task.project || "General";
   return `${company} · ${project}`;
 }
 
@@ -162,6 +193,26 @@ function getTaskStatus(task) {
   return "planned";
 }
 
+function parseDependencies(input) {
+  if (!input) return [];
+  return input
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function getWorkStartMinutes() {
+  return workStartMinutes;
+}
+
+function getWorkEndMinutes() {
+  return workEndMinutes;
+}
+
+function getBreakMinutes() {
+  return breakMinutes;
+}
+
 function getProjectColor(task) {
   const key = getProjectKey(task);
   let hash = 0;
@@ -169,6 +220,85 @@ function getProjectColor(task) {
     hash = (hash * 31 + key.charCodeAt(i)) % PROJECT_COLORS.length;
   }
   return PROJECT_COLORS[hash];
+}
+
+function getProjectPriority(task) {
+  if (!task.project_id) return 2;
+  const project = projectsCache.find((item) => item.id === task.project_id);
+  if (!project) return 2;
+  return Number(project.priority_level) || 2;
+}
+
+function getEffectivePriority(task) {
+  const taskPriority = Number(task.priority_level) || 2;
+  const projectPriority = getProjectPriority(task);
+  return Math.min(taskPriority, projectPriority);
+}
+
+function getDeadlineScore(task) {
+  if (!task.deadline_date) return Infinity;
+  const base = Date.parse(task.deadline_date);
+  if (Number.isNaN(base)) return Infinity;
+  return base;
+}
+
+function sortTasksForScheduling(tasks) {
+  return tasks.slice().sort((a, b) => {
+    const priorityDelta = getEffectivePriority(a) - getEffectivePriority(b);
+    if (priorityDelta !== 0) return priorityDelta;
+    const deadlineDelta = getDeadlineScore(a) - getDeadlineScore(b);
+    if (deadlineDelta !== 0) return deadlineDelta;
+    if (a.deadline_type === "hard" && b.deadline_type !== "hard") return -1;
+    if (b.deadline_type === "hard" && a.deadline_type !== "hard") return 1;
+    return (a.estimated_hours || 0) - (b.estimated_hours || 0);
+  });
+}
+
+function dependenciesMet(task, scheduledIds, tasksById) {
+  if (!task.dependencies || !task.dependencies.length) return true;
+  return task.dependencies.every((depId) => {
+    const dep = tasksById.get(depId);
+    if (!dep) return true;
+    if (getTaskStatus(dep) === "completed") return true;
+    return scheduledIds.has(depId);
+  });
+}
+
+function hasIncompleteDependencies(task, tasksById) {
+  if (!task.dependencies || !task.dependencies.length) return false;
+  return task.dependencies.some((depId) => {
+    const dep = tasksById.get(depId);
+    if (!dep) return false;
+    return getTaskStatus(dep) !== "completed";
+  });
+}
+
+function buildSchedulingQueue(tasks) {
+  const sorted = sortTasksForScheduling(tasks);
+  const tasksById = new Map(sorted.map((task) => [task.id, task]));
+  const remaining = sorted.slice();
+  const queue = [];
+  const scheduledIds = new Set();
+  let guard = 0;
+  while (remaining.length && guard < 10000) {
+    guard += 1;
+    let progress = false;
+    for (let i = 0; i < remaining.length; i += 1) {
+      const task = remaining[i];
+      if (dependenciesMet(task, scheduledIds, tasksById)) {
+        queue.push(task);
+        scheduledIds.add(task.id);
+        remaining.splice(i, 1);
+        progress = true;
+        i -= 1;
+      }
+    }
+    if (!progress) {
+      queue.push(...remaining);
+      break;
+    }
+  }
+  return queue;
 }
 
 function updateFocusStatus() {
@@ -268,9 +398,81 @@ async function renderApp(user) {
   userEmail.textContent = user.email ?? "Signed in";
   signOutButton.hidden = false;
   setActiveTab("calendar-tab");
+  await loadWorkSettings();
+  await loadProjects();
   updateMonthLabel();
   await loadMonth();
   await loadDay();
+}
+
+async function loadWorkSettings() {
+  const user = await getCurrentUser();
+  if (!user) return;
+  const { data, error } = await supabase
+    .from("user_settings")
+    .select("*")
+    .eq("user_id", user.id)
+    .single();
+  if (error && error.code !== "PGRST116") {
+    setMessage(workHoursMessage, error.message, "error");
+    return;
+  }
+  const settings = data ?? {
+    work_start: "09:00",
+    work_end: "17:00",
+    break_length: 15,
+  };
+  workStartMinutes = toMinutes(settings.work_start);
+  workEndMinutes = toMinutes(settings.work_end);
+  breakMinutes = settings.break_length ?? BREAK_MINUTES;
+  if (workHoursForm) {
+    document.querySelector("#work-start").value = settings.work_start;
+    document.querySelector("#work-end").value = settings.work_end;
+    document.querySelector("#break-length").value = breakMinutes;
+  }
+}
+
+async function saveWorkSettings(payload) {
+  const user = await getCurrentUser();
+  if (!user) return;
+  const { error } = await supabase
+    .from("user_settings")
+    .upsert({ user_id: user.id, ...payload });
+  if (error) {
+    setMessage(workHoursMessage, error.message, "error");
+    return;
+  }
+  setMessage(workHoursMessage, "Work hours saved.");
+  await loadWorkSettings();
+  await loadMonth();
+  await loadDay();
+}
+
+async function loadProjects() {
+  const user = await getCurrentUser();
+  if (!user) return;
+  const { data, error } = await supabase
+    .from("projects")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
+  if (error) {
+    setMessage(projectMessage, error.message, "error");
+    return;
+  }
+  projectsCache = data ?? [];
+  if (!taskProjectSelect) return;
+  taskProjectSelect.innerHTML = "";
+  const noneOption = document.createElement("option");
+  noneOption.value = "";
+  noneOption.textContent = "No project";
+  taskProjectSelect.appendChild(noneOption);
+  projectsCache.forEach((project) => {
+    const option = document.createElement("option");
+    option.value = project.id;
+    option.textContent = project.title;
+    taskProjectSelect.appendChild(option);
+  });
 }
 
 async function signIn(email, password, mode) {
@@ -329,6 +531,111 @@ monthNext.addEventListener("click", () => {
   loadMonth();
 });
 
+projectForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setMessage(projectMessage, "");
+  const user = await getCurrentUser();
+  if (!user) {
+    setMessage(projectMessage, "Please sign in first.", "error");
+    return;
+  }
+  const payload = {
+    user_id: user.id,
+    title: document.querySelector("#project-title").value.trim(),
+    description: document.querySelector("#project-description").value.trim(),
+    priority_level: Number(document.querySelector("#project-priority").value) || 2,
+    deadline_type: document.querySelector("#project-deadline-type").value || null,
+    deadline_date: document.querySelector("#project-deadline-date").value || null,
+  };
+  if (!payload.title) {
+    setMessage(projectMessage, "Project title is required.", "error");
+    return;
+  }
+  const { error } = await supabase.from("projects").insert(payload);
+  if (error) {
+    setMessage(projectMessage, error.message, "error");
+    return;
+  }
+  projectForm.reset();
+  setMessage(projectMessage, "Project added.");
+  await loadProjects();
+});
+
+eventForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setMessage(eventMessage, "");
+  const user = await getCurrentUser();
+  if (!user) {
+    setMessage(eventMessage, "Please sign in first.", "error");
+    return;
+  }
+  const payload = {
+    user_id: user.id,
+    title: document.querySelector("#event-title").value.trim(),
+    event_date: document.querySelector("#event-date").value,
+    start_time: document.querySelector("#event-start").value,
+    end_time: document.querySelector("#event-end").value,
+    source: "internal",
+    is_fixed: true,
+  };
+  if (!payload.title || !payload.event_date || !payload.start_time || !payload.end_time) {
+    setMessage(eventMessage, "All event fields are required.", "error");
+    return;
+  }
+  const { error } = await supabase.from("calendar_events").insert(payload);
+  if (error) {
+    setMessage(eventMessage, error.message, "error");
+    return;
+  }
+  eventForm.reset();
+  setMessage(eventMessage, "Event added.");
+  await loadMonth();
+  await loadDay();
+});
+
+workHoursForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setMessage(workHoursMessage, "");
+  const payload = {
+    work_start: document.querySelector("#work-start").value,
+    work_end: document.querySelector("#work-end").value,
+    break_length: Number(document.querySelector("#break-length").value) || BREAK_MINUTES,
+  };
+  await saveWorkSettings(payload);
+});
+
+calendarImportForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setMessage(calendarImportMessage, "");
+  const user = await getCurrentUser();
+  if (!user) {
+    setMessage(calendarImportMessage, "Please sign in first.", "error");
+    return;
+  }
+  const apiKey = document.querySelector("#google-api-key").value.trim();
+  const calendarId = document.querySelector("#google-calendar-id").value.trim();
+  if (!apiKey || !calendarId) {
+    setMessage(calendarImportMessage, "API key and calendar ID are required.", "error");
+    return;
+  }
+  await importGoogleCalendar(user, apiKey, calendarId);
+});
+
+aiBreakdownButton?.addEventListener("click", async () => {
+  setMessage(aiMessage, "");
+  const user = await getCurrentUser();
+  if (!user) {
+    setMessage(aiMessage, "Please sign in first.", "error");
+    return;
+  }
+  const description = aiInput.value.trim();
+  if (!description) {
+    setMessage(aiMessage, "Add a project description first.", "error");
+    return;
+  }
+  await createTasksFromAI(description, user.id);
+});
+
 taskForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   setMessage(taskMessage, "");
@@ -341,6 +648,7 @@ taskForm.addEventListener("submit", async (event) => {
   const payload = {
     user_id: user.id,
     title: document.querySelector("#task-title").value.trim(),
+    project_id: document.querySelector("#task-project-id").value || null,
     company: document.querySelector("#task-company").value.trim(),
     project: document.querySelector("#task-project").value.trim(),
     task_date: document.querySelector("#task-date").value,
@@ -348,6 +656,10 @@ taskForm.addEventListener("submit", async (event) => {
     end_time: document.querySelector("#task-end").value || null,
     is_milestone: document.querySelector("#task-milestone").checked,
     estimated_hours: parseFloat(document.querySelector("#task-hours").value) || null,
+    priority_level: Number(document.querySelector("#task-priority").value) || 2,
+    deadline_type: document.querySelector("#task-deadline-type").value || null,
+    deadline_date: document.querySelector("#task-deadline-date").value || null,
+    dependencies: parseDependencies(document.querySelector("#task-dependencies").value),
     notes: document.querySelector("#task-notes").value.trim(),
     status: "planned",
   };
@@ -415,6 +727,7 @@ refreshButton.addEventListener("click", loadDay);
 autoScheduleButton.addEventListener("click", autoSchedule);
 dayPicker.addEventListener("change", () => {
   document.querySelector("#task-date").value = dayPicker.value;
+  if (eventDateInput) eventDateInput.value = dayPicker.value;
   setCurrentMonthFromDate(dayPicker.value);
   loadMonth();
   loadDay();
@@ -508,6 +821,10 @@ function parseBulkLine(line, userId) {
     is_milestone: milestone,
     estimated_hours: Number.isFinite(estimatedHours) ? estimatedHours : null,
     status: "planned",
+    priority_level: 2,
+    deadline_type: null,
+    deadline_date: null,
+    dependencies: [],
   };
 }
 
@@ -527,23 +844,37 @@ async function loadDay() {
   if (!user) return;
   const day = dayPicker.value || todayISO;
   await rollOverOverdueTasks(user);
-  const { data, error } = await supabase
-    .from("tasks")
-    .select("*")
-    .eq("user_id", user.id)
-    .eq("task_date", day)
-    .order("start_time", { ascending: true });
-  if (error) {
-    dayMap.innerHTML = `<p class="empty danger">${error.message}</p>`;
+  const [{ data: taskData, error: taskError }, { data: eventData, error: eventError }] =
+    await Promise.all([
+      supabase
+        .from("tasks")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("task_date", day)
+        .order("start_time", { ascending: true }),
+      supabase
+        .from("calendar_events")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("event_date", day)
+        .order("start_time", { ascending: true }),
+    ]);
+  if (taskError) {
+    dayMap.innerHTML = `<p class="empty danger">${taskError.message}</p>`;
     return;
   }
-  const tasks = data ?? [];
+  if (eventError) {
+    fixedEventsEl.innerHTML = `<p class="empty danger">${eventError.message}</p>`;
+    return;
+  }
+  const tasks = taskData ?? [];
+  const events = eventData ?? [];
   const adjusted = await adjustOverrunIfNeeded(user, tasks, day);
   if (adjusted) {
     await loadDay();
     return;
   }
-  renderDay(tasks);
+  renderDay(tasks, events);
   await loadToday();
 }
 
@@ -583,6 +914,20 @@ async function adjustOverrunIfNeeded(user, tasks, day) {
   const nowMinutes = toMinutes(getNowTimeString());
   const scheduledEnd = toMinutes(inProgress.end_time);
   if (nowMinutes <= scheduledEnd) return false;
+
+  const { data: events, error: eventError } = await supabase
+    .from("calendar_events")
+    .select("*")
+    .eq("user_id", user.id)
+    .eq("event_date", day);
+  if (eventError) {
+    setMessage(taskMessage, eventError.message, "error");
+    return false;
+  }
+  if ((events ?? []).length) {
+    await autoSchedule();
+    return true;
+  }
 
   const overrun = nowMinutes - scheduledEnd;
   const updates = [];
@@ -636,22 +981,39 @@ async function loadMonth() {
     currentMonth.getMonth(),
     new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0).getDate()
   );
-  const { data, error } = await supabase
-    .from("tasks")
-    .select("*")
-    .eq("user_id", user.id)
-    .gte("task_date", startDay)
-    .lte("task_date", endDay)
-    .order("task_date", { ascending: true });
+  const [
+    { data: taskData, error: taskError },
+    { data: eventData, error: eventError },
+  ] = await Promise.all([
+    supabase
+      .from("tasks")
+      .select("*")
+      .eq("user_id", user.id)
+      .gte("task_date", startDay)
+      .lte("task_date", endDay)
+      .order("task_date", { ascending: true }),
+    supabase
+      .from("calendar_events")
+      .select("*")
+      .eq("user_id", user.id)
+      .gte("event_date", startDay)
+      .lte("event_date", endDay)
+      .order("event_date", { ascending: true }),
+  ]);
 
-  if (error) {
-    monthGrid.innerHTML = `<p class="empty danger">${error.message}</p>`;
+  if (taskError) {
+    monthGrid.innerHTML = `<p class="empty danger">${taskError.message}</p>`;
+    return;
+  }
+  if (eventError) {
+    monthGrid.innerHTML = `<p class="empty danger">${eventError.message}</p>`;
     return;
   }
 
-  const tasks = data ?? [];
+  const tasks = taskData ?? [];
+  const events = eventData ?? [];
   syncFocusOptions(tasks);
-  renderMonthCalendar(tasks);
+  renderMonthCalendar(tasks, events);
 }
 
 function syncFocusOptions(tasks) {
@@ -677,7 +1039,7 @@ function syncFocusOptions(tasks) {
   updateFocusStatus();
 }
 
-function renderMonthCalendar(tasks) {
+function renderMonthCalendar(tasks, events = []) {
   const year = currentMonth.getFullYear();
   const monthIndex = currentMonth.getMonth();
   const firstDay = new Date(year, monthIndex, 1);
@@ -685,11 +1047,18 @@ function renderMonthCalendar(tasks) {
   const offset = firstDay.getDay();
 
   const tasksByDate = {};
+  const eventsByDate = {};
   tasks.forEach((task) => {
     if (!tasksByDate[task.task_date]) {
       tasksByDate[task.task_date] = [];
     }
     tasksByDate[task.task_date].push(task);
+  });
+  events.forEach((event) => {
+    if (!eventsByDate[event.event_date]) {
+      eventsByDate[event.event_date] = [];
+    }
+    eventsByDate[event.event_date].push(event);
   });
 
   monthGrid.innerHTML = "";
@@ -709,9 +1078,14 @@ function renderMonthCalendar(tasks) {
   for (let day = 1; day <= daysInMonth; day += 1) {
     const dayIso = formatDateParts(year, monthIndex, day);
     const items = tasksByDate[dayIso] ?? [];
+    const fixedItems = eventsByDate[dayIso] ?? [];
     const scheduledMinutes = items.reduce((sum, task) => {
       if (!task.start_time || !task.end_time) return sum;
       return sum + Math.max(toMinutes(task.end_time) - toMinutes(task.start_time), 0);
+    }, 0);
+    const fixedMinutes = fixedItems.reduce((sum, event) => {
+      if (!event.start_time || !event.end_time) return sum;
+      return sum + Math.max(toMinutes(event.end_time) - toMinutes(event.start_time), 0);
     }, 0);
     const cell = document.createElement("div");
     cell.className = "calendar-cell";
@@ -735,7 +1109,7 @@ function renderMonthCalendar(tasks) {
         ${items.length ? `<span class="day-count">${items.length}</span>` : ""}
       </div>
       <div class="calendar-cell-bottom">
-        <span class="day-stats">${minutesToDuration(scheduledMinutes)}</span>
+        <span class="day-stats">${minutesToDuration(scheduledMinutes + fixedMinutes)}</span>
         <div class="calendar-indicators">${indicators}</div>
       </div>
     `;
@@ -756,22 +1130,38 @@ function renderMonthCalendar(tasks) {
 async function loadToday() {
   const user = await getCurrentUser();
   if (!user) return;
-  const { data, error } = await supabase
-    .from("tasks")
-    .select("*")
-    .eq("user_id", user.id)
-    .eq("task_date", todayISO)
-    .order("start_time", { ascending: true });
-  if (error) {
-    todayMap.innerHTML = `<p class="empty danger">${error.message}</p>`;
+  const [{ data: taskData, error: taskError }, { data: eventData, error: eventError }] =
+    await Promise.all([
+      supabase
+        .from("tasks")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("task_date", todayISO)
+        .order("start_time", { ascending: true }),
+      supabase
+        .from("calendar_events")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("event_date", todayISO)
+        .order("start_time", { ascending: true }),
+    ]);
+  if (taskError) {
+    todayMap.innerHTML = `<p class="empty danger">${taskError.message}</p>`;
     return;
   }
-  renderToday(data ?? []);
+  if (eventError) {
+    todayMap.innerHTML = `<p class="empty danger">${eventError.message}</p>`;
+    return;
+  }
+  renderToday(taskData ?? [], eventData ?? []);
 }
 
-function renderDay(tasks) {
+function renderDay(tasks, events = []) {
   const deduped = dedupeOverlaps(tasks);
+  dayTaskIndex = new Map();
+  tasks.forEach((task) => dayTaskIndex.set(task.id, task));
   renderTimeline(deduped);
+  renderFixedEvents(events);
   renderMilestones(deduped);
   renderBalance(deduped);
   if (dayViewCard) {
@@ -792,8 +1182,8 @@ function renderDay(tasks) {
   selectedDayLabel.textContent = `Day view: ${dayPicker.value || todayISO}`;
 }
 
-function renderToday(tasks) {
-  renderTodayBlocks(tasks);
+function renderToday(tasks, events = []) {
+  renderTodayBlocks(tasks, events);
   const totalMinutes = tasks.reduce((sum, task) => {
     if (!task.start_time || !task.end_time) return sum;
     return sum + Math.max(toMinutes(task.end_time) - toMinutes(task.start_time), 0);
@@ -803,18 +1193,22 @@ function renderToday(tasks) {
       <div class="balance-item"><span>${tasks.length} tasks</span><span>${minutesToDuration(totalMinutes)}</span></div>
       <div class="balance-item"><span>Milestones</span><span>${tasks.filter((task) => task.is_milestone).length}</span></div>
       <div class="balance-item"><span>Completed</span><span>${tasks.filter((task) => getTaskStatus(task) === "completed").length}</span></div>
+      <div class="balance-item"><span>Fixed events</span><span>${events.length}</span></div>
     </div>
   `;
 }
 
-function renderTodayBlocks(tasks) {
+function renderTodayBlocks(tasks, events = []) {
   const cleaned = dedupeOverlaps(tasks);
   const unscheduled = tasks.filter((task) => !task.start_time || !task.end_time);
+  const fixed = events
+    .filter((event) => event.start_time && event.end_time)
+    .sort((a, b) => toMinutes(a.start_time) - toMinutes(b.start_time));
 
   todayMap.innerHTML = "";
   todayTaskIndex = new Map();
   tasks.forEach((task) => todayTaskIndex.set(task.id, task));
-  if (!cleaned.length && !unscheduled.length) {
+  if (!cleaned.length && !unscheduled.length && !fixed.length) {
     todayMap.innerHTML = `<p class="empty">No tasks scheduled today.</p>`;
     return;
   }
@@ -822,8 +1216,25 @@ function renderTodayBlocks(tasks) {
   const list = document.createElement("div");
   list.className = "today-list";
 
-  let lastEnd = null;
-  cleaned.forEach((task, index) => {
+  const combined = [
+    ...cleaned.map((task) => ({ type: "task", data: task })),
+    ...fixed.map((event) => ({ type: "event", data: event })),
+  ].sort((a, b) => toMinutes(a.data.start_time) - toMinutes(b.data.start_time));
+
+  combined.forEach((entry, index) => {
+    if (entry.type === "event") {
+      const event = entry.data;
+      const item = document.createElement("div");
+      item.className = "today-item today-event";
+      item.innerHTML = `
+        <div class="today-time">${formatTimeRange(event.start_time, event.end_time)}</div>
+        <div class="today-title">${escapeHtml(event.title)}</div>
+        <div class="today-actions"><span class="pill">Fixed</span></div>
+      `;
+      list.appendChild(item);
+      return;
+    }
+    const task = entry.data;
     const start = toMinutes(task.start_time);
     const end = toMinutes(task.end_time);
     const item = document.createElement("div");
@@ -853,20 +1264,20 @@ function renderTodayBlocks(tasks) {
     list.appendChild(item);
     lastEnd = end;
 
-    const nextTask = cleaned[index + 1];
-    if (nextTask) {
-      const nextStart = toMinutes(nextTask.start_time);
+    const nextItem = combined[index + 1];
+    if (nextItem && nextItem.type === "task") {
+      const nextStart = toMinutes(nextItem.data.start_time);
       const breakStart = end;
-      const breakEnd = end + BREAK_MINUTES;
+      const breakEnd = end + getBreakMinutes();
       const breakItem = document.createElement("div");
       breakItem.className = "today-break";
       if (nextStart < breakEnd) {
         breakItem.classList.add("break-missing");
-        breakItem.textContent = `Break ${BREAK_MINUTES}m needed (next ${toTimeString(
+        breakItem.textContent = `Break ${getBreakMinutes()}m needed (next ${toTimeString(
           nextStart
         )})`;
       } else {
-        breakItem.textContent = `Break ${BREAK_MINUTES}m (${toTimeString(
+        breakItem.textContent = `Break ${getBreakMinutes()}m (${toTimeString(
           breakStart
         )} - ${toTimeString(breakEnd)})`;
       }
@@ -904,7 +1315,7 @@ function renderTodayBlocks(tasks) {
         return;
       }
       if (action === "reschedule") {
-        const task = todayTaskIndex.get(button.dataset.taskId);
+        const task = dayTaskIndex.get(button.dataset.taskId);
         if (task) {
           await rescheduleTask(task);
         }
@@ -981,6 +1392,11 @@ async function markTaskStopped(taskId) {
 async function markTaskFinished(taskId) {
   const nowTime = getNowTimeString();
   const nowDate = new Date().toISOString();
+  const { data: taskData } = await supabase
+    .from("tasks")
+    .select("end_time, actual_start, user_id")
+    .eq("id", taskId)
+    .single();
   const { error } = await supabase
     .from("tasks")
     .update({
@@ -993,6 +1409,19 @@ async function markTaskFinished(taskId) {
   if (error) {
     setMessage(taskMessage, error.message, "error");
     return;
+  }
+  if (taskData?.user_id) {
+    const scheduledEnd = taskData.end_time ? toMinutes(taskData.end_time) : null;
+    const nowMinutes = toMinutes(nowTime);
+    const overrun =
+      scheduledEnd !== null && nowMinutes > scheduledEnd ? nowMinutes - scheduledEnd : 0;
+    await supabase.from("behavioral_data").insert({
+      user_id: taskData.user_id,
+      task_id: taskId,
+      start_time: taskData.actual_start || null,
+      end_time: nowTime,
+      overrun_minutes: overrun,
+    });
   }
   await loadDay();
   await loadToday();
@@ -1018,6 +1447,115 @@ async function rescheduleTask(task) {
   await loadDay();
   await loadToday();
   await loadMonth();
+}
+
+async function importGoogleCalendar(user, apiKey, calendarId) {
+  const timeMin = new Date().toISOString();
+  const timeMax = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString();
+  const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+    calendarId
+  )}/events?key=${encodeURIComponent(apiKey)}&timeMin=${encodeURIComponent(
+    timeMin
+  )}&timeMax=${encodeURIComponent(timeMax)}&singleEvents=true&orderBy=startTime`;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      setMessage(calendarImportMessage, "Failed to fetch calendar events.", "error");
+      return;
+    }
+    const payload = await response.json();
+    const items = payload.items ?? [];
+    const events = items
+      .map((item) => {
+        const start = item.start?.dateTime || item.start?.date;
+        const end = item.end?.dateTime || item.end?.date;
+        if (!start || !end) return null;
+        const startDate = new Date(start);
+        const endDate = new Date(end);
+        const eventDate = toDateStringFromDate(startDate);
+        const startTime = item.start?.dateTime
+          ? toTimeStringFromDate(startDate)
+          : toTimeString(getWorkStartMinutes());
+        const endTime = item.end?.dateTime
+          ? toTimeStringFromDate(endDate)
+          : toTimeString(getWorkEndMinutes());
+        return {
+          user_id: user.id,
+          title: item.summary || "External event",
+          source: "google",
+          event_date: eventDate,
+          start_time: startTime,
+          end_time: endTime,
+          is_fixed: true,
+        };
+      })
+      .filter(Boolean);
+    if (!events.length) {
+      setMessage(calendarImportMessage, "No events found in date range.");
+      return;
+    }
+    const { error } = await supabase.from("calendar_events").insert(events);
+    if (error) {
+      setMessage(calendarImportMessage, error.message, "error");
+      return;
+    }
+    setMessage(calendarImportMessage, `Imported ${events.length} events.`);
+    await loadMonth();
+    await loadDay();
+  } catch (error) {
+    setMessage(calendarImportMessage, "Calendar import failed.", "error");
+  }
+}
+
+async function getBehaviorOverrunMinutes(user) {
+  const { data, error } = await supabase
+    .from("behavioral_data")
+    .select("overrun_minutes")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (error || !data || !data.length) return 0;
+  const total = data.reduce((sum, item) => sum + (item.overrun_minutes || 0), 0);
+  return Math.round(total / data.length);
+}
+
+async function createTasksFromAI(description, userId) {
+  const lines = description
+    .split("\n")
+    .map((line) => line.replace(/^[-*]\\s*/, "").trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    setMessage(aiMessage, "No task lines detected.", "error");
+    return;
+  }
+  const tasks = lines.map((line) => {
+    const estimateMatch = line.match(/est\\s*=\\s*([0-9]*\\.?[0-9]+)\\s*h?/i);
+    const estimatedHours = estimateMatch ? Number(estimateMatch[1]) : 1.5;
+    const title = line.replace(/est\\s*=\\s*([0-9]*\\.?[0-9]+)\\s*h?/i, "").trim();
+    return {
+      user_id: userId,
+      title: title || line,
+      company: document.querySelector("#task-company").value.trim(),
+      project: document.querySelector("#task-project").value.trim(),
+      project_id: document.querySelector("#task-project-id").value || null,
+      task_date: dayPicker.value || todayISO,
+      estimated_hours: estimatedHours,
+      priority_level: Number(document.querySelector("#task-priority").value) || 2,
+      deadline_type: document.querySelector("#task-deadline-type").value || null,
+      deadline_date: document.querySelector("#task-deadline-date").value || null,
+      dependencies: [],
+      status: "planned",
+    };
+  });
+  const { error } = await supabase.from("tasks").insert(tasks);
+  if (error) {
+    setMessage(aiMessage, error.message, "error");
+    return;
+  }
+  setMessage(aiMessage, `Generated ${tasks.length} task(s).`);
+  aiInput.value = "";
+  await loadMonth();
+  await loadDay();
 }
 
 function renderTimeline(tasks) {
@@ -1061,16 +1599,25 @@ function renderTimeline(tasks) {
         ${status === "completed" ? `<span class="pill done">Done</span>` : ""}
         ${canStart ? `<button class="secondary" data-action="start" data-task-id="${task.id}">Start</button>` : ""}
         ${canFinish ? `<button class="secondary" data-action="finish" data-task-id="${task.id}">Finish</button>` : ""}
+        ${status === "in_progress" ? `<button class="secondary" data-action="stop" data-task-id="${task.id}">Stop</button>` : ""}
+        <button class="secondary" data-action="reschedule" data-task-id="${task.id}">Reschedule</button>
         <button class="secondary" data-action="delete" data-task-id="${task.id}">Delete</button>
       </div>
     `;
     const meta = document.createElement("div");
     meta.className = "task-meta";
+    const projectLabel = task.project_id
+      ? projectsCache.find((item) => item.id === task.project_id)?.title
+      : task.project;
+    const blocked = hasIncompleteDependencies(task, dayTaskIndex);
     meta.innerHTML = `
       <span class="pill time">${formatTimeRange(task.start_time, task.end_time)}</span>
       ${task.company ? `<span class="pill company">${escapeHtml(task.company)}</span>` : ""}
-      ${task.project ? `<span class="pill project">${escapeHtml(task.project)}</span>` : ""}
+      ${projectLabel ? `<span class="pill project">${escapeHtml(projectLabel)}</span>` : ""}
       ${task.estimated_hours ? `<span class="pill">Est ${formatHours(task.estimated_hours)}</span>` : ""}
+      ${task.priority_level ? `<span class="pill">P${task.priority_level}</span>` : ""}
+      ${task.deadline_date ? `<span class="pill">${escapeHtml(task.deadline_type || "soft")} ${task.deadline_date}</span>` : ""}
+      ${blocked ? `<span class="pill">Blocked</span>` : ""}
       ${task.is_milestone ? `<span class="pill milestone">Milestone</span>` : ""}
     `;
     item.append(header, meta);
@@ -1125,6 +1672,17 @@ function renderTimeline(tasks) {
       }
       if (action === "finish") {
         await markTaskFinished(button.dataset.taskId);
+        return;
+      }
+      if (action === "stop") {
+        await markTaskStopped(button.dataset.taskId);
+        return;
+      }
+      if (action === "reschedule") {
+        const task = todayTaskIndex.get(button.dataset.taskId);
+        if (task) {
+          await rescheduleTask(task);
+        }
       }
     });
   });
@@ -1149,6 +1707,27 @@ function renderMilestones(tasks) {
   });
   milestonesEl.innerHTML = "";
   milestonesEl.appendChild(list);
+}
+
+function renderFixedEvents(events) {
+  if (!fixedEventsEl) return;
+  if (!events.length) {
+    fixedEventsEl.innerHTML = `<p class="empty">No fixed events.</p>`;
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "milestone-list";
+  events.forEach((event) => {
+    const item = document.createElement("div");
+    item.className = "milestone-item";
+    item.innerHTML = `
+      <span>${escapeHtml(event.title)}</span>
+      <span>${formatTimeRange(event.start_time, event.end_time)}</span>
+    `;
+    list.appendChild(item);
+  });
+  fixedEventsEl.innerHTML = "";
+  fixedEventsEl.appendChild(list);
 }
 
 function renderBalance(tasks) {
@@ -1200,19 +1779,36 @@ async function autoSchedule() {
     }
   }
 
-  const { data, error } = await supabase
-    .from("tasks")
-    .select("*")
-    .eq("user_id", user.id)
-    .gte("task_date", startDay)
-    .order("created_at", { ascending: true });
+  const [
+    { data: taskData, error: taskError },
+    { data: eventData, error: eventError },
+  ] = await Promise.all([
+    supabase
+      .from("tasks")
+      .select("*")
+      .eq("user_id", user.id)
+      .gte("task_date", startDay)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("calendar_events")
+      .select("*")
+      .eq("user_id", user.id)
+      .gte("event_date", startDay)
+      .order("event_date", { ascending: true }),
+  ]);
 
-  if (error) {
-    setMessage(taskMessage, error.message, "error");
+  if (taskError) {
+    setMessage(taskMessage, taskError.message, "error");
+    return;
+  }
+  if (eventError) {
+    setMessage(taskMessage, eventError.message, "error");
     return;
   }
 
-  const tasks = data ?? [];
+  const tasks = taskData ?? [];
+  const events = eventData ?? [];
+  const behaviorOverrunMinutes = await getBehaviorOverrunMinutes(user);
   const schedulable = allowReshuffle
     ? tasks.filter((task) => task.estimated_hours && getTaskStatus(task) !== "completed")
     : tasks.filter(
@@ -1238,17 +1834,25 @@ async function autoSchedule() {
     }
     busyByDate.get(task.task_date).push([start, end]);
   });
+  events.forEach((event) => {
+    const start = toMinutes(event.start_time);
+    const end = toMinutes(event.end_time) + getBreakMinutes();
+    if (!busyByDate.has(event.event_date)) {
+      busyByDate.set(event.event_date, []);
+    }
+    busyByDate.get(event.event_date).push([start, end]);
+  });
 
   const updates = [];
   const inserts = [];
   const useFocus = focusEnabled && focusKey;
   const focusQueue = [];
   const normalQueue = [];
-  const orderedTasks = schedulable.slice();
+  const orderedTasks = buildSchedulingQueue(schedulable);
   orderedTasks.forEach((task) => {
     const entry = {
       task,
-      remainingMinutes: Math.ceil(task.estimated_hours * 60),
+      remainingMinutes: Math.ceil(task.estimated_hours * 60 + behaviorOverrunMinutes),
       isFirstSegment: true,
     };
     if (useFocus && getProjectKey(task) === focusKey) {
@@ -1324,8 +1928,8 @@ async function autoSchedule() {
 
         current.remainingMinutes -= chunkMinutes;
         slotCursor = slotEnd;
-        if (slotCursor + BREAK_MINUTES <= slot[1]) {
-          slotCursor += BREAK_MINUTES;
+        if (slotCursor + getBreakMinutes() <= slot[1]) {
+          slotCursor += getBreakMinutes();
         } else {
           slotCursor = slot[1];
         }
@@ -1374,18 +1978,18 @@ async function autoSchedule() {
 }
 
 function getFreeSlots(busyIntervals) {
-  if (!busyIntervals.length) return [[WORK_START, WORK_END]];
+  if (!busyIntervals.length) return [[getWorkStartMinutes(), getWorkEndMinutes()]];
   const slots = [];
-  let cursor = WORK_START;
+  let cursor = getWorkStartMinutes();
   for (const [start, end] of busyIntervals) {
     if (start > cursor) {
-      slots.push([cursor, Math.min(start, WORK_END)]);
+      slots.push([cursor, Math.min(start, getWorkEndMinutes())]);
     }
     cursor = Math.max(cursor, end);
-    if (cursor >= WORK_END) break;
+    if (cursor >= getWorkEndMinutes()) break;
   }
-  if (cursor < WORK_END) {
-    slots.push([cursor, WORK_END]);
+  if (cursor < getWorkEndMinutes()) {
+    slots.push([cursor, getWorkEndMinutes()]);
   }
   return slots.filter((slot) => slot[1] > slot[0]);
 }

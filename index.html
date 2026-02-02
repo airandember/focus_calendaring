@@ -87,6 +87,8 @@
             <section class="card day-view-card" id="day-view-card">
               <h3 id="selected-day-label">Day view</h3>
               <div id="day-map" class="timeline"></div>
+              <h3>Fixed events</h3>
+              <div id="fixed-events"></div>
               <h3>Milestones</h3>
               <div id="milestones"></div>
               <h3>Workload balance</h3>
@@ -119,6 +121,10 @@
                     <input id="task-title" type="text" required />
                   </label>
                   <label>
+                    Project
+                    <select id="task-project-id"></select>
+                  </label>
+                  <label>
                     Company
                     <input id="task-company" type="text" placeholder="MBC" />
                   </label>
@@ -141,6 +147,26 @@
                   <label>
                     Est. hours
                     <input id="task-hours" type="number" step="0.25" min="0" placeholder="2.5" />
+                  </label>
+                  <label>
+                    Priority (1-3)
+                    <input id="task-priority" type="number" min="1" max="3" value="2" />
+                  </label>
+                  <label>
+                    Deadline type
+                    <select id="task-deadline-type">
+                      <option value="">None</option>
+                      <option value="soft">Soft</option>
+                      <option value="hard">Hard</option>
+                    </select>
+                  </label>
+                  <label>
+                    Deadline date
+                    <input id="task-deadline-date" type="date" />
+                  </label>
+                  <label>
+                    Dependencies (task IDs, comma separated)
+                    <input id="task-dependencies" type="text" placeholder="uuid, uuid" />
                   </label>
                 </div>
                 <label class="checkbox">
@@ -169,6 +195,127 @@
                 <button id="bulk-import" type="button">Import tasks</button>
               </div>
               <p class="helper" id="bulk-message"></p>
+            </section>
+
+            <section class="card">
+              <h3>Add a project</h3>
+              <form id="project-form">
+                <div class="form-grid">
+                  <label>
+                    Project title
+                    <input id="project-title" type="text" required />
+                  </label>
+                  <label>
+                    Description
+                    <textarea id="project-description" rows="2"></textarea>
+                  </label>
+                  <label>
+                    Priority (1-3)
+                    <input id="project-priority" type="number" min="1" max="3" value="2" />
+                  </label>
+                  <label>
+                    Deadline type
+                    <select id="project-deadline-type">
+                      <option value="">None</option>
+                      <option value="soft">Soft</option>
+                      <option value="hard">Hard</option>
+                    </select>
+                  </label>
+                  <label>
+                    Deadline date
+                    <input id="project-deadline-date" type="date" />
+                  </label>
+                </div>
+                <div class="actions">
+                  <button type="submit">Add project</button>
+                </div>
+                <p class="helper" id="project-message"></p>
+              </form>
+            </section>
+
+            <section class="card">
+              <h3>Add a fixed event</h3>
+              <form id="event-form">
+                <div class="form-grid">
+                  <label>
+                    Title
+                    <input id="event-title" type="text" required />
+                  </label>
+                  <label>
+                    Day
+                    <input id="event-date" type="date" required />
+                  </label>
+                  <label>
+                    Start
+                    <input id="event-start" type="time" required />
+                  </label>
+                  <label>
+                    End
+                    <input id="event-end" type="time" required />
+                  </label>
+                </div>
+                <div class="actions">
+                  <button type="submit">Add event</button>
+                </div>
+                <p class="helper" id="event-message"></p>
+              </form>
+            </section>
+
+            <section class="card">
+              <h3>Work hours</h3>
+              <form id="work-hours-form">
+                <div class="form-grid">
+                  <label>
+                    Start
+                    <input id="work-start" type="time" value="09:00" />
+                  </label>
+                  <label>
+                    End
+                    <input id="work-end" type="time" value="17:00" />
+                  </label>
+                  <label>
+                    Break length (minutes)
+                    <input id="break-length" type="number" min="5" max="60" value="15" />
+                  </label>
+                </div>
+                <div class="actions">
+                  <button type="submit">Save work hours</button>
+                </div>
+                <p class="helper" id="work-hours-message"></p>
+              </form>
+            </section>
+
+            <section class="card">
+              <h3>External calendar (read-only)</h3>
+              <p class="helper">
+                Use a public Google Calendar with an API key to import fixed events.
+              </p>
+              <form id="calendar-import-form">
+                <div class="form-grid">
+                  <label>
+                    Google API key
+                    <input id="google-api-key" type="text" />
+                  </label>
+                  <label>
+                    Calendar ID
+                    <input id="google-calendar-id" type="text" placeholder="example@group.calendar.google.com" />
+                  </label>
+                </div>
+                <div class="actions">
+                  <button type="submit">Import events</button>
+                </div>
+                <p class="helper" id="calendar-import-message"></p>
+              </form>
+            </section>
+
+            <section class="card">
+              <h3>AI task breakdown (lightweight)</h3>
+              <p class="helper">Paste a project description and get a draft task list.</p>
+              <textarea id="ai-input" rows="6" placeholder="Describe the project..."></textarea>
+              <div class="actions">
+                <button id="ai-breakdown" type="button">Generate tasks</button>
+              </div>
+              <p class="helper" id="ai-message"></p>
             </section>
           </div>
         </section>
