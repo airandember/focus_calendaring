@@ -1,4 +1,4 @@
-# focus_calendaring
+# Cal-Ender
 Webapp that helps individuals schedule and track their tasks.
 
 ## What this includes

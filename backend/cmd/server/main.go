@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"os"
 
-	"focus-backend/internal/handlers"
-	"focus-backend/internal/supabase"
+	"cal-enderBE/internal/handlers"
+	"cal-enderBE/internal/supabase"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"

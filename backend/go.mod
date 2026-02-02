@@ -1,4 +1,4 @@
-module focus-backend
+module cal-enderBE
 
 go 1.24.3
 

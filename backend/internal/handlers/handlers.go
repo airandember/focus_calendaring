@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"focus-backend/internal/scheduler"
-	"focus-backend/internal/supabase"
+	"cal-enderBE/internal/scheduler"
+	"cal-enderBE/internal/supabase"
 
 	"github.com/go-chi/chi/v5"
 )

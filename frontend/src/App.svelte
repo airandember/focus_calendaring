@@ -1446,7 +1446,7 @@
 
 <header class="app-header">
   <div>
-    <h1>Focus Calendaring</h1>
+    <h1>Cal-Ender</h1>
     <p class="subtitle">Plan tasks, map milestones, balance projects.</p>
   </div>
   <div class="user-info">
