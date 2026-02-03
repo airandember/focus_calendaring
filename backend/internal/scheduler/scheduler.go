@@ -401,7 +401,7 @@ func sortTasks(tasks []Task) []Task {
 		iDeadline := deadlineScore(out[i])
 		jDeadline := deadlineScore(out[j])
 		if iDeadline != jDeadline {
-			return iDeadline < jDeadline
+			return iDeadline.Before(jDeadline)
 		}
 		if out[i].DeadlineType != nil && *out[i].DeadlineType == "hard" &&
 			(out[j].DeadlineType == nil || *out[j].DeadlineType != "hard") {

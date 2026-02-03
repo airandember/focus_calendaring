@@ -142,7 +142,7 @@ func (a *App) UpdateTask(w http.ResponseWriter, r *http.Request) {
 			json.Unmarshal(taskData, &rows)
 			if len(rows) > 0 {
 				now := time.Now().Format("15:04")
-				_ = a.Supabase.Insert("behavioral_data", map[string]any{
+				_, _ = a.Supabase.Insert("behavioral_data", map[string]any{
 					"user_id":         userID,
 					"task_id":         taskID,
 					"start_time":      rows[0]["actual_start"],

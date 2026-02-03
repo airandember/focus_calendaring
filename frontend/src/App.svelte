@@ -5,6 +5,11 @@
   const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
   const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
   const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+  const LOCAL_USERNAME =
+    import.meta.env.VITE_USERNAME || import.meta.env.USERNAME || "admin";
+  const LOCAL_PASSWORD =
+    import.meta.env.VITE_PASSWORD || import.meta.env.PASSWORD || "admin";
+  const LOCAL_AUTH_STORAGE_KEY = "cal-ender-local-auth";
   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
   let authSection;
@@ -48,6 +53,7 @@
   let balanceEl;
   let todayMap;
   let todaySummary;
+  let localSessionEmail = null;
 
   let focusEnabled = false;
   let focusKey = "";
@@ -320,6 +326,12 @@
 
   async function handleAuth() {
     await handleRecoveryFromHash();
+    const storedLocalAuth = sessionStorage.getItem(LOCAL_AUTH_STORAGE_KEY);
+    if (storedLocalAuth) {
+      localSessionEmail = storedLocalAuth;
+      await renderApp({ email: storedLocalAuth });
+      return;
+    }
     const { data } = await supabase.auth.getSession();
     if (data.session) {
       await renderApp(data.session.user);
@@ -352,6 +364,13 @@
     setMessage(authMessage, "");
     if (!email || !password) {
       setMessage(authMessage, "Email and password are required.", "error");
+      return;
+    }
+    if (mode === "signin" && email === LOCAL_USERNAME && password === LOCAL_PASSWORD) {
+      localSessionEmail = email || LOCAL_USERNAME;
+      sessionStorage.setItem(LOCAL_AUTH_STORAGE_KEY, localSessionEmail);
+      setMessage(authMessage, "Signed in locally.");
+      await renderApp({ email: localSessionEmail });
       return;
     }
     if (mode === "signup") {
@@ -1137,6 +1156,8 @@
     });
 
     signOutButton.addEventListener("click", async () => {
+      localSessionEmail = null;
+      sessionStorage.removeItem(LOCAL_AUTH_STORAGE_KEY);
       await supabase.auth.signOut();
       renderSignedOut();
     });
